@@ -15,7 +15,7 @@ What was switched, in order, and how to undo it.
 
 Left in place on purpose:
 
-- `~/Projects/pi-browser` (archived, rollback material) and `~/.local/bin/browser-login` (still works against the new browser; superseded by `pib secret`).
+- `~/Projects/pi-browser` (archived, rollback material) `~/.local/bin/browser-login` was deleted 2026-11-12 (superseded by `pib secret`).
 - The `agent-browser` binary in `~/.local` (`npm rm -g agent-browser` removes it). Pi sessions that were already running during the cutover still have the old tool loaded; restart them, or tell them to use `pib`.
 - `/opt/google/chrome` (151): used by `google-chrome` for pptx-maker and hallmark. Updating it needs root and is a separate decision.
 
