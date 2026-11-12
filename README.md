@@ -71,7 +71,7 @@ default next to logged-in accounts. `pi-browser-harness` (npm) is pi-native and
 has per-session isolation, but registers 40 tools in every session and also
 enables the Runtime domain. So: a small driver of our own, borrowing their good
 ideas (AX-tree refs that re-resolve at action time, compositor-level input,
-one window per session).
+one tab per session).
 
 ## How it works
 
@@ -79,7 +79,9 @@ one window per session).
   cannot launch a browser, so there is no anonymous fallback to fall into.
 - **No daemon.** Each call connects, acts, saves a little state and exits
   (about 0.2 s overhead). Nothing to leak or orphan.
-- **A tab (in its own window) per session**, keyed by `PI_SESSION_ID`. State is
+- **A tab per session, all in one shared window**, keyed by `PI_SESSION_ID`. Each
+  command brings its own tab to the front first (a background tab does not
+  render, so screenshots and lazy pages would hang). State is
   in `$XDG_RUNTIME_DIR/pib/<session>.json`. `pib tabs` shows ownership;
   `pib close` cleans up; `pib gc` closes tabs of sessions idle for 6 h.
 - **Never `Runtime.enable`.** `lib/cdp.mjs` refuses to send it. Evaluation and

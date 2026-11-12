@@ -135,7 +135,11 @@ class Ctx {
   }
 
   async newTab() {
-    const { targetId } = await this.cdp.send("Target.createTarget", { url: "about:blank", newWindow: true, background: true });
+    // One shared window: new tabs go into the existing window. Only when no
+    // window is open at all does Chrome refuse, and then a window is made.
+    const { targetId } = await this.cdp
+      .send("Target.createTarget", { url: "about:blank", newWindow: false, background: false })
+      .catch(() => this.cdp.send("Target.createTarget", { url: "about:blank", newWindow: true, background: false }));
     this.state.tabs.push(targetId);
     this.state.current = targetId;
     this.attached = null;
