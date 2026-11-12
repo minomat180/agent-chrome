@@ -62,7 +62,18 @@ EOF
 
 alive() { curl -sf --max-time 2 "http://127.0.0.1:$PORT/json/version" >/dev/null 2>&1; }
 mode() { cat "$MODE_FILE" 2>/dev/null || echo unknown; }
-pid_of() { local p; p="$(cat "$1" 2>/dev/null)" && [ -n "$p" ] && kill -0 "$p" 2>/dev/null && echo "$p"; }
+# A pidfile is only believed if that pid is still the process it was written
+# for. Pids get reused (after a crash, after a reboot), and stop sends signals.
+pid_of() {
+  local p want
+  p="$(cat "$1" 2>/dev/null)" && [ -n "$p" ] && kill -0 "$p" 2>/dev/null || return 1
+  case "$1" in
+    "$CHROME_PID")  want="--user-data-dir=$PROFILE" ;;
+    "$CAGE_PID")    want="pib-cage" ;;
+    "$POINTER_PID") want="virtual-pointer.py" ;;
+  esac
+  tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null | grep -qF -- "$want" && echo "$p"
+}
 # True only if the process on the port is the one we started.
 ours() { local p; p="$(pid_of "$CHROME_PID")" && [ -n "$p" ]; }
 port_owner() { ss -ltnpH "sport = :$PORT" 2>/dev/null | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | head -1; }
