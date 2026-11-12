@@ -83,6 +83,28 @@ anything with spaces or shell characters.
 - `eval` runs in an isolated world: the DOM is there, page variables are not.
   A `ReferenceError` usually means you want `--main`.
 
+## Lessons that cost real calls
+
+- **Public pages do not need the browser.** `curl` or the web-search skill's
+  `--fetch` is cheaper. Use pib for pages that need JS, a login, or get bot-walled.
+- **Never guess a doc sub-page URL from a nav label.** Some doc hosts append
+  unpredictable suffixes to slugs (`/billing-934010m0`); guessing burned four
+  404s in one session. Get the real link targets first (`pib read <url> --links`,
+  or `pib snap -a`, which shows where links go), then open those.
+- Pick one way to fetch a given site and stick with it; do not fetch the same
+  content through both pib and curl.
+- "(nothing visible changed)" means what it says. Look again instead of assuming
+  the click worked.
+- **A secret shown on a page** (a freshly created API token) must not enter the
+  conversation: do not `pib text` it. Write it straight to a file, e.g.
+  `pib eval --main '<expr>' > /path/file` with `chmod 600`, and report only that
+  it was saved.
+- The browser's clipboard is not connected to mino's desktop: a page's "Copy"
+  button followed by `wl-paste` yields nothing.
+- Before `pib-chrome login`, `background`, `restart` or `update`: they restart the
+  one shared browser, closing every session's tabs and signing out sites whose
+  login is a session-only cookie. Check `pib tabs` and say so first.
+
 ## Passwords
 
 Never type a credential yourself. Pipe it from the vault, so it goes
