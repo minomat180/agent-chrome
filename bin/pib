@@ -190,6 +190,8 @@ class Ctx {
       const named = Object.entries(snap.lines).map(([ref, line]) => ({ ref, line, name: (line.match(/^\S+ "((?:[^"\\]|\\.)*)"/)?.[1] || "").toLowerCase() }));
       let hits = named.filter((h) => h.name === want);
       if (!hits.length) hits = named.filter((h) => h.name.includes(want));
+      // Last resort: the whole line, so `text=Delete (in: Invoice 12)` picks one of several twins.
+      if (!hits.length) hits = named.filter((h) => h.line.replace(/"/g, "").toLowerCase().includes(want.replace(/"/g, "")));
       if (!hits.length) throw new PibError(`nothing on the page is labelled ${JSON.stringify(spec.slice(5))}`, "pib snap --find ... to see what is there");
       if (hits.length > 1) {
         throw new PibError(`${hits.length} elements match ${JSON.stringify(spec.slice(5))}:\n` + hits.slice(0, 8).map((h) => `  e${h.ref} ${h.line}`).join("\n"), "use the ref of the one you mean");
