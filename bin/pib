@@ -426,6 +426,8 @@ const COMMANDS = {
     const page = await ctx.page();
     const snap = await ctx.takeSnapshot(page, { all });
     const items = all ? snap.items : snap.items.filter((i) => !i.quiet);
+    ctx.mutated = false; // the caller is looking at the page right now: a change report would only repeat it
+    ctx.before = null;
     const m = await page.metrics().catch(() => null);
     const where = m && m.max > 0 ? `  (scrolled ${m.y}/${m.max}px)` : "";
     return `page: ${snap.info.title || "(untitled)"} | ${snap.info.url}${where}\n${render(items, { find, max })}`;
