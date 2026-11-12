@@ -4,7 +4,7 @@ What was switched, in order, and how to undo it.
 
 | Step | What | Undo |
 |---|---|---|
-| 1 | `pi-chrome stop`; profile copied to `~/.local/share/pi-browser/chrome-profile.bak-151-20261112` (1.2 GB); `pib-chrome start` on the same profile and port with the private Chrome 157 | see "Going back" |
+| 1 | `pi-chrome stop`; profile copied to `~/.local/share/pi-browser/chrome-profile.bak-151-20261112` (1.2 GB, deleted 2026-11-12); `pib-chrome start` on the same profile and port with the private Chrome 157 | see "Going back" |
 | 2 | `~/.config/mango/autostart.sh`: `pi-chrome start` -> `pib-chrome start` | `autostart.sh.bak-20261112-pre-pib` |
 | 3 | Skill linked: `~/.pi/agent/skills/pib -> ~/Projects/pib/skill` | remove the link |
 | 4 | `pi remove npm:pi-agent-browser-native` (the `agent_browser` tool) | `pi install npm:pi-agent-browser-native`; `settings.json.bak-20261112-pre-pib` |
@@ -27,11 +27,10 @@ are two ways back:
 
 - Old launcher, new Chrome: `pib-chrome stop`, relink step 7, then
   `PI_CHROME_BIN=~/.local/share/pib/chrome/current/chrome pi-chrome start`.
-- Everything as it was, including Chrome 151: `pib-chrome stop`, move the
-  current profile aside, rename the `.bak-151-20261112` copy back to
-  `chrome-profile`, undo steps 2 to 7. Logins made after the cutover are lost.
-
-Delete the profile backup once pib has proven itself; it holds live session cookies.
+- Everything as it was, including Chrome 151: no longer possible. The
+  `.bak-151-20261112` profile copy was deleted on 2026-11-12 at mino's
+  request (1.2 GB, live session cookies). Going back to Chrome 151 now means
+  a fresh profile and signing in again.
 
 ## After the cutover
 
