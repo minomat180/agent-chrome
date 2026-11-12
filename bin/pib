@@ -1,0 +1,987 @@
+#!/usr/bin/env node
+// pib - drive the agent's real, logged-in Chrome from the shell.
+//
+// One browser (the one on 127.0.0.1:9222), one tab per agent session, no
+// daemon. Every call connects, acts, reports what changed, and disconnects.
+// See README.md for the why, and `pib help` for the commands.
+
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from "node:fs";
+import { join, resolve as resolvePath, dirname } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { CDP, PibError, sleep } from "../lib/cdp.mjs";
+import { Page } from "../lib/page.mjs";
+import * as State from "../lib/state.mjs";
+import { snapshot, render, diff } from "../lib/snapshot.mjs";
+
+const HELP = `pib - drive the agent's logged-in Chrome (one tab per session, refs like e12)
+
+  pib open <url>                 go to a URL in this session's tab (created on first use)
+  pib snap [--find TEXT] [-a]    list what can be acted on, with refs. -a adds page text
+  pib click <target>             [--force] [--double] [--right]
+  pib fill <target> <text>       replace a field's value
+  pib type <text>                type into whatever has focus   [--keys] per-key events
+  pib press <key>                Enter, Tab, Escape, ArrowDown, ctrl+a, shift+Tab ...
+  pib select <target> <option>   <select> by label or value
+  pib check|uncheck <target>     checkbox / radio / switch
+  pib hover <target>
+  pib scroll [down|up|top|bottom|<target>] [pages]
+  pib upload <target> <file>...
+  pib download <target>          click something that downloads; prints the saved path  [--to DIR]
+  pib secret <target>            type a secret from STDIN into a field; never echoed
+  pib text [target]              visible text of the page or one element   [--max N]
+  pib read [--filter TEXT]       readable article-style text   [--links] [--max N]
+  pib html [target]              outer HTML   [--max N]
+  pib eval <js>                  evaluate (isolated world).  --main for page globals,  - reads stdin
+  pib get url|title|value <t>|attr <t> <name>|count <css>
+  pib wait <ms> | text <s> | gone <s> | sel <css> | url <part> | load   [--timeout MS]
+  pib shot [file] [--full] [--el <target>]     screenshot to a file (never inline)
+  pib back | forward | reload
+  pib tabs | tab new [url] | tab use <id> | tab close [id]
+  pib run                        batch: one command per line on STDIN, stops at first error
+  pib status | close | gc | cdp <Method> [json]
+
+  target:  e12 (ref from snap)   text=Sign in   css selector   640,360 (x,y)
+  global:  --port N (PIB_PORT, 9222)   --session KEY (PIB_SESSION / PI_SESSION_ID)   -q no change report
+  dialogs: alert() is accepted and reported. confirm()/prompt() are DISMISSED and reported;
+           repeat the command with --accept (and --prompt TEXT) to answer yes instead.
+`;
+
+// ---------------------------------------------------------------------------
+// small helpers
+
+const clip = (s, n) => (s.length > n ? `${s.slice(0, n)}\n… (${s.length - n} more chars; raise --max)` : s);
+const short = (id) => id.slice(0, 8);
+
+function takeFlag(args, ...names) {
+  for (const n of names) {
+    const i = args.indexOf(n);
+    if (i >= 0) {
+      args.splice(i, 1);
+      return true;
+    }
+  }
+  return false;
+}
+function takeOpt(args, name) {
+  const i = args.indexOf(name);
+  if (i < 0) return undefined;
+  const [, v] = args.splice(i, 2);
+  if (v === undefined) throw new PibError(`${name} needs a value`);
+  return v;
+}
+const need = (v, usage) => {
+  if (v === undefined || v === "") throw new PibError(`usage: pib ${usage}`);
+  return v;
+};
+
+// Shell-ish tokenizer for batch lines: quotes group, backslash escapes.
+function tokenize(line) {
+  const out = [];
+  let cur = "";
+  let quote = null;
+  let has = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      else if (ch === "\\" && quote === '"' && i + 1 < line.length) cur += line[++i];
+      else cur += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      has = true;
+    } else if (ch === "\\" && i + 1 < line.length) {
+      cur += line[++i];
+      has = true;
+    } else if (/\s/.test(ch)) {
+      if (cur || has) out.push(cur);
+      cur = "";
+      has = false;
+    } else cur += ch;
+  }
+  if (quote) throw new PibError(`unterminated ${quote} in: ${line}`);
+  if (cur || has) out.push(cur);
+  return out;
+}
+
+const readStdin = () => {
+  if (process.stdin.isTTY) throw new PibError("nothing on stdin");
+  return readFileSync(0, "utf8");
+};
+
+// ---------------------------------------------------------------------------
+// context: browser connection + this session's tab
+
+class Ctx {
+  constructor(cdp, state, opts) {
+    this.cdp = cdp;
+    this.state = state;
+    this.opts = opts;
+    this.attached = null;
+    this.mutated = false;
+    this.listAfter = false; // print the full element list instead of a diff
+    this.hideText = false; // a secret was typed: no text diff this run
+    this.before = null; // { loader, url, text } captured before the first action
+    this.policy = { accept: !!opts.accept, promptText: opts.prompt };
+  }
+
+  async targets() {
+    const { targetInfos } = await this.cdp.send("Target.getTargets");
+    return targetInfos.filter((t) => t.type === "page" && !t.url.startsWith("devtools://") && !t.url.startsWith("chrome-extension://"));
+  }
+
+  async sync() {
+    const live = new Set((await this.targets()).map((t) => t.targetId));
+    State.prune(this.state, live);
+  }
+
+  async newTab() {
+    const { targetId } = await this.cdp.send("Target.createTarget", { url: "about:blank", newWindow: true, background: true });
+    this.state.tabs.push(targetId);
+    this.state.current = targetId;
+    this.attached = null;
+    return targetId;
+  }
+
+  async page({ create = false } = {}) {
+    if (this.attached && this.attached.targetId === this.state.current) return this.attached;
+    if (!this.state.current) {
+      if (!create) throw new PibError("this session has no tab yet", "pib open <url>   (or: pib tabs, then pib tab use <id> to take over an existing one)");
+      await this.newTab();
+    }
+    this.attached = await Page.attach(this.cdp, this.state.current);
+    this.attached.policy = this.policy;
+    return this.attached;
+  }
+
+  saved(page) {
+    return this.state.pages[page.targetId];
+  }
+
+  // Called by every command that can change the page, before it acts.
+  async willMutate(page) {
+    this.mutated = true;
+    if (this.before || this.opts.quiet) return;
+    const info = await page.info().catch(() => ({}));
+    let text = null;
+    let lines = null;
+    try {
+      text = await page.eval("document.body ? document.body.innerText : ''", { timeout: 4000 });
+      const saved = this.saved(page);
+      lines = saved && saved.loader === page.loaderId && saved.lines ? saved.lines : (await this.takeSnapshot(page)).lines;
+    } catch {}
+    this.before = { loader: page.loaderId, url: info.url, text, lines, targetId: page.targetId };
+  }
+
+  async resolve(page, spec) {
+    need(spec, "<command> <target>   (target: e12 | text=Label | css selector | x,y)");
+    if (/^e\d+$/.test(spec)) {
+      const saved = this.saved(page);
+      if (!saved?.refs) throw new PibError(`no snapshot yet, so ${spec} means nothing`, "pib snap");
+      if (saved.loader !== page.loaderId) throw new PibError(`the page changed since ${spec} was issued`, "pib snap for the current refs");
+      const r = saved.refs[spec.slice(1)];
+      if (!r) throw new PibError(`unknown ref ${spec}`, "pib snap for the current refs");
+      return { b: r[0], f: r[1], ref: spec };
+    }
+    const xy = spec.match(/^(\d+(?:\.\d+)?),(\d+(?:\.\d+)?)$/);
+    if (xy) return { pt: { x: Number(xy[1]), y: Number(xy[2]) }, ref: spec };
+    if (spec.startsWith("text=")) {
+      const want = spec.slice(5).trim().toLowerCase();
+      const snap = await this.takeSnapshot(page);
+      const named = Object.entries(snap.lines).map(([ref, line]) => ({ ref, line, name: (line.match(/^\S+ "((?:[^"\\]|\\.)*)"/)?.[1] || "").toLowerCase() }));
+      let hits = named.filter((h) => h.name === want);
+      if (!hits.length) hits = named.filter((h) => h.name.includes(want));
+      if (!hits.length) throw new PibError(`nothing on the page is labelled ${JSON.stringify(spec.slice(5))}`, "pib snap --find ... to see what is there");
+      if (hits.length > 1) {
+        throw new PibError(`${hits.length} elements match ${JSON.stringify(spec.slice(5))}:\n` + hits.slice(0, 8).map((h) => `  e${h.ref} ${h.line}`).join("\n"), "use the ref of the one you mean");
+      }
+      const r = snap.refs[hits[0].ref];
+      return { b: r[0], f: r[1], ref: `e${hits[0].ref}` };
+    }
+    const { node, count } = await page.query(spec);
+    if (!node) throw new PibError(`no element matches ${JSON.stringify(spec)}`, "check the selector, or use a ref from pib snap");
+    return { ...node, ref: spec, count };
+  }
+
+  async takeSnapshot(page, opts) {
+    const snap = await snapshot(page, this.saved(page), opts);
+    const hidden = this.saved(page)?.hidden || [];
+    for (const ref of hidden) {
+      if (snap.lines[ref]) snap.lines[ref] = snap.lines[ref].replace(/ value="(?:[^"\\]|\\.)*"/, " value=(hidden)");
+    }
+    for (const it of snap.items) if (it.ref && hidden.includes(String(it.ref))) it.text = snap.lines[it.ref];
+    const info = await page.info().catch(() => ({}));
+    this.state.pages[page.targetId] = { ...snap.store, lines: snap.lines, hidden, url: info.url };
+    return { ...snap, info };
+  }
+
+  // After the command(s): say what changed, so the next call rarely has to be a snapshot.
+  async report() {
+    let page = this.attached;
+    if (!page) return "";
+    const out = [];
+    for (const d of page.dialogs) {
+      const said = `${d.type}: ${JSON.stringify(d.message.length > 300 ? d.message.slice(0, 300) + "…" : d.message)}`;
+      if (d.type === "alert" || d.type === "beforeunload") out.push(`${said} (accepted)`);
+      else out.push(d.accepted ? `${said} -> accepted` : `${said} -> DISMISSED (answered "cancel"). To answer yes, repeat the command with --accept${d.type === "prompt" ? " --prompt TEXT" : ""}`);
+    }
+    page.dialogs.length = 0;
+    if (!this.mutated || this.opts.quiet) return out.join("\n");
+
+    if (page.newTabs.length) {
+      const fresh = page.newTabs.at(-1);
+      for (const id of page.newTabs) if (!this.state.tabs.includes(id)) this.state.tabs.push(id);
+      const previous = this.state.current;
+      this.state.current = fresh;
+      this.attached = null;
+      page = await this.page();
+      await page.settle({ idleMax: 2500 });
+      out.push(`opened a new tab and switched to it (${short(fresh)}); the previous one is still open: pib tab use ${short(previous)}`);
+      this.before = null;
+    }
+
+    const snap = await this.takeSnapshot(page).catch((err) => ({ error: err }));
+    if (snap.error) return out.concat(`(could not read the page: ${snap.error.message})`).join("\n");
+    const b = this.before;
+    const sameDoc = b && b.lines && b.targetId === page.targetId && b.loader === page.loaderId && !this.listAfter;
+    if (!sameDoc) {
+      out.push(`page: ${snap.info.title || "(untitled)"} | ${snap.info.url}`);
+      out.push(render(snap.items.filter((i) => !i.quiet), { max: this.opts.max ?? 60 }));
+    } else {
+      if (b.url !== snap.info.url) out.push(`url: ${snap.info.url}`);
+      const changes = diff(b.lines, snap.lines, { max: this.opts.max ?? 25 });
+      if (!this.hideText && b.text !== null) {
+        try {
+          const after = await page.eval("document.body ? document.body.innerText : ''", { timeout: 4000 });
+          const seen = new Set(b.text.split("\n").map((l) => l.trim()));
+          const fresh = [...new Set(after.split("\n").map((l) => l.trim()).filter((l) => l.length > 1 && !seen.has(l)))];
+          for (const l of fresh.slice(0, 8)) changes.push(`text+ ${l.length > 160 ? l.slice(0, 160) + "…" : l}`);
+          if (fresh.length > 8) changes.push(`… +${fresh.length - 8} more new text lines (pib text)`);
+        } catch {}
+      }
+      out.push(changes.length ? changes.join("\n") : "(nothing visible changed)");
+    }
+    return out.join("\n");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// in-page helpers (run in the isolated world)
+
+const READER = `(function (filter, max, links) {
+  const root = document.querySelector("main, article, [role=main]") || document.body;
+  if (!root) return "";
+  const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "SVG", "IFRAME", "CANVAS", "VIDEO", "AUDIO", "INPUT", "SELECT", "TEXTAREA", "BUTTON"]);
+  const CHROME = new Set(["NAV", "FOOTER", "ASIDE"]);
+  const BLOCK = new Set(["P", "DIV", "SECTION", "ARTICLE", "LI", "UL", "OL", "TR", "TABLE", "BLOCKQUOTE", "PRE", "H1", "H2", "H3", "H4", "H5", "H6", "HEADER", "MAIN", "DL", "DT", "DD", "FIGURE", "FIGCAPTION", "DETAILS", "SUMMARY", "BR", "HR"]);
+  const chunks = [];
+  let cur = "";
+  const flush = () => { const t = cur.replace(/[ \\t]+/g, " ").trim(); if (t) chunks.push(t); cur = ""; };
+  (function walk(node) {
+    for (const c of node.childNodes) {
+      if (c.nodeType === 3) { cur += c.nodeValue; continue; }
+      if (c.nodeType !== 1) continue;
+      const tag = c.tagName.toUpperCase();
+      if (SKIP.has(tag) || (root === document.body && CHROME.has(tag))) continue;
+      if (c.getAttribute("aria-hidden") === "true" || (c.checkVisibility && !c.checkVisibility())) continue;
+      const block = BLOCK.has(tag);
+      if (block) flush();
+      if (/^H[1-6]$/.test(tag)) cur += "#".repeat(Number(tag[1])) + " ";
+      else if (tag === "LI") cur += "- ";
+      if (tag === "PRE") cur += c.innerText;
+      else if (tag === "A" && links && /^https?:/.test(c.href) && c.innerText.trim()) cur += "[" + c.innerText.trim() + "](" + c.href + ")";
+      else if (tag === "TD" || tag === "TH") { walk(c); cur += " | "; }
+      else walk(c.shadowRoot || c);
+      if (block) flush();
+    }
+  })(root);
+  flush();
+  let keep = chunks;
+  if (filter) {
+    const f = filter.toLowerCase();
+    keep = [];
+    let heading = null;
+    for (const c of chunks) {
+      if (c[0] === "#") { heading = c; if (c.toLowerCase().includes(f)) { keep.push(c); heading = null; } continue; }
+      if (c.toLowerCase().includes(f)) { if (heading) { keep.push(heading); heading = null; } keep.push(c); }
+    }
+  }
+  const text = keep.join("\\n");
+  return { text: text.slice(0, max), total: text.length, matched: filter ? keep.length : undefined };
+})`;
+
+const FIELD_KIND = `function () {
+  const t = this.tagName;
+  if (t === "SELECT") return "select";
+  if (t === "INPUT") {
+    const ty = (this.type || "text").toLowerCase();
+    if (["checkbox", "radio", "file", "button", "submit", "image", "reset"].includes(ty)) return "bad:" + ty;
+    if (["date", "time", "datetime-local", "month", "week", "color", "range"].includes(ty)) return "native";
+    return "text";
+  }
+  if (t === "TEXTAREA") return "text";
+  if (this.isContentEditable) return "rich";
+  return "other";
+}`;
+const FIELD_VALUE = `function () { return this.isContentEditable ? this.innerText : this.value; }`;
+// For printing: never hand a password field's content back to the caller.
+const SHOWN_VALUE = `function () { return this.type === "password" ? "(hidden: password field)" : this.isContentEditable ? this.innerText : this.value; }`;
+const SELECT_ALL = `function () {
+  this.focus();
+  if (this.isContentEditable) { const s = this.ownerDocument.getSelection(); s.selectAllChildren(this); return; }
+  if (this.select) this.select();
+}`;
+const NATIVE_SET = `function (value) {
+  const proto = this instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : this instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(proto, "value").set.call(this, value);
+  this.dispatchEvent(new Event("input", { bubbles: true }));
+  this.dispatchEvent(new Event("change", { bubbles: true }));
+  return this.value;
+}`;
+
+async function focusForTyping(page, node) {
+  const sid = node.f ? page.kids.get(node.f)?.sessionId : page.sessionId;
+  try {
+    await page.cdp.send("DOM.focus", { backendNodeId: node.b }, sid);
+  } catch {
+    await page.click(node); // not focusable by API: a click usually focuses the real input inside
+  }
+  await page.callOn(node, SELECT_ALL).catch(() => {});
+}
+
+async function fill(page, node, text) {
+  const kind = await page.callOn(node, FIELD_KIND);
+  if (kind === "select") return select(page, node, text);
+  if (kind.startsWith("bad:")) {
+    const ty = kind.slice(4);
+    throw new PibError(`${node.ref} is an <input type=${ty}>, not a text field`, ty === "file" ? "pib upload <target> <file>" : ty === "checkbox" || ty === "radio" ? "pib check <target>  /  pib click <target>" : "pib click <target>");
+  }
+  if (kind === "native") {
+    const now = await page.callOn(node, NATIVE_SET, [text]);
+    if (now !== text) throw new PibError(`${node.ref} rejected ${JSON.stringify(text)} (it now holds ${JSON.stringify(now)})`, "date fields want YYYY-MM-DD, time HH:MM, color #rrggbb");
+    return `filled ${node.ref}`;
+  }
+  const before = kind === "other" ? null : await page.callOn(node, FIELD_VALUE);
+  await focusForTyping(page, node);
+  if (text === "") await page.press("Delete", node);
+  else await page.insertText(text, node);
+  await sleep(40);
+  if (kind === "other") return `typed into ${node.ref} (not a plain field, so the result is not verified; check with pib snap)`;
+  let now = await page.callOn(node, FIELD_VALUE);
+  const same = (a, b) => String(a).replace(/\r\n/g, "\n").trimEnd() === String(b).replace(/\r\n/g, "\n").trimEnd();
+  if (same(now, text)) return `filled ${node.ref}`;
+  if (kind === "text" && same(now, before)) {
+    // The field ignored typed input; set it the way frameworks expect.
+    now = await page.callOn(node, NATIVE_SET, [text]);
+    if (same(now, text)) return `filled ${node.ref} (set directly; the field ignored typing)`;
+  }
+  return `filled ${node.ref}, but the page changed it to ${JSON.stringify(String(now).slice(0, 80))}`;
+}
+
+async function select(page, node, want) {
+  const r = await page.callOn(
+    node,
+    `function (want) {
+      if (this.tagName !== "SELECT") return { error: "not-select" };
+      const opts = [...this.options];
+      const norm = (s) => String(s).trim().toLowerCase();
+      const w = norm(want);
+      const hit = opts.find((o) => o.value === want) || opts.find((o) => norm(o.label) === w || norm(o.text) === w) || opts.find((o) => norm(o.value) === w) || opts.find((o) => norm(o.text).includes(w));
+      if (!hit) return { error: "no-option", options: opts.map((o) => o.text.trim()).slice(0, 30) };
+      if (hit.disabled) return { error: "disabled" };
+      if (this.multiple) hit.selected = true; else this.value = hit.value;
+      this.dispatchEvent(new Event("input", { bubbles: true }));
+      this.dispatchEvent(new Event("change", { bubbles: true }));
+      return { label: hit.text.trim() };
+    }`,
+    [want],
+  );
+  if (r.error === "not-select") throw new PibError(`${node.ref} is not a native <select>`, "it is a custom dropdown: pib click it, then pib click the option that appears");
+  if (r.error === "no-option") throw new PibError(`${node.ref} has no option ${JSON.stringify(want)}`, `options: ${r.options.join(" | ")}`);
+  if (r.error === "disabled") throw new PibError(`that option of ${node.ref} is disabled`);
+  return `selected ${JSON.stringify(r.label)} in ${node.ref}`;
+}
+
+// ---------------------------------------------------------------------------
+// commands
+
+const COMMANDS = {
+  async open(ctx, args) {
+    let url = need(args[0], "open <url>");
+    // "localhost:8765/x" looks like scheme "localhost:", so only accept real schemes.
+    if (!/^(https?|file|about|data|chrome|view-source|blob):/i.test(url)) url = (/^(localhost|127\.|\[::1\]|10\.|192\.168\.)/.test(url) ? "http://" : "https://") + url;
+    const page = await ctx.page({ create: true });
+    ctx.mutated = true;
+    ctx.listAfter = true;
+    const r = await page.navigate(url);
+    if (r.download) return "that URL is a download, not a page (use: pib download, or curl)";
+    return r.slow ? "opened (still loading after 30s; continuing)" : "";
+  },
+
+  async snap(ctx, args) {
+    const all = takeFlag(args, "-a", "--all");
+    const find = takeOpt(args, "--find");
+    const max = Number(takeOpt(args, "--max") ?? ctx.opts.max ?? (all ? 400 : 150));
+    const page = await ctx.page();
+    const snap = await ctx.takeSnapshot(page, { all });
+    const items = all ? snap.items : snap.items.filter((i) => !i.quiet);
+    const m = await page.metrics().catch(() => null);
+    const where = m && m.max > 0 ? `  (scrolled ${m.y}/${m.max}px)` : "";
+    return `page: ${snap.info.title || "(untitled)"} | ${snap.info.url}${where}\n${render(items, { find, max })}`;
+  },
+
+  async click(ctx, args) {
+    const force = takeFlag(args, "--force");
+    const count = takeFlag(args, "--double") ? 2 : 1;
+    const button = takeFlag(args, "--right") ? "right" : "left";
+    const page = await ctx.page();
+    const node = await ctx.resolve(page, args.join(" "));
+    await ctx.willMutate(page);
+    if (node.pt) await page.clickAt(node.pt, { button, count });
+    else await page.click(node, { force, button, count });
+    await page.settle();
+    return `clicked ${node.ref}${node.count > 1 ? ` (first of ${node.count} matches)` : ""}`;
+  },
+
+  async fill(ctx, args) {
+    const page = await ctx.page();
+    const node = await ctx.resolve(page, args[0]);
+    if (node.pt) throw new PibError("fill needs an element, not coordinates", "pib click x,y  then  pib type <text>");
+    if (args.length < 2) throw new PibError("usage: pib fill <target> <text>");
+    await ctx.willMutate(page);
+    const msg = await fill(page, node, args.slice(1).join(" "));
+    await page.settle({ idleMax: 1200 });
+    return msg;
+  },
+
+  async type(ctx, args) {
+    const keys = takeFlag(args, "--keys");
+    const text = need(args.join(" "), "type <text>");
+    const page = await ctx.page();
+    await ctx.willMutate(page);
+    if (keys) await page.typeKeys(text);
+    else await page.insertText(text);
+    await page.settle({ idleMax: 1200 });
+    return `typed ${text.length} chars`;
+  },
+
+  async press(ctx, args) {
+    const combo = need(args[0], "press <key>   e.g. Enter, Tab, Escape, ArrowDown, ctrl+a");
+    const times = Math.min(Number(args[1]?.replace(/^x/, "") || 1) || 1, 50);
+    const page = await ctx.page();
+    await ctx.willMutate(page);
+    for (let i = 0; i < times; i++) await page.press(combo);
+    await page.settle();
+    return `pressed ${combo}${times > 1 ? ` x${times}` : ""}`;
+  },
+
+  async select(ctx, args) {
+    const page = await ctx.page();
+    const node = await ctx.resolve(page, args[0]);
+    const want = need(args.slice(1).join(" "), "select <target> <option label or value>");
+    await ctx.willMutate(page);
+    const msg = await select(page, node, want);
+    await page.settle({ idleMax: 1200 });
+    return msg;
+  },
+
+  async check(ctx, args, want = true) {
+    const page = await ctx.page();
+    const node = await ctx.resolve(page, args.join(" "));
+    const state = await page.callOn(node, `function () { return "checked" in this && this.type !== undefined ? this.checked : this.getAttribute("aria-checked") ?? this.getAttribute("aria-pressed"); }`);
+    const is = state === true || state === "true";
+    if (state === null || state === undefined) throw new PibError(`${node.ref} is not a checkbox, radio or switch`, "pib click <target>");
+    if (is === want) return `${node.ref} is already ${want ? "checked" : "unchecked"}`;
+    await ctx.willMutate(page);
+    await page.click(node);
+    await page.settle({ idleMax: 1200 });
+    return `${want ? "checked" : "unchecked"} ${node.ref}`;
+  },
+  uncheck(ctx, args) {
+    return COMMANDS.check(ctx, args, false);
+  },
+
+  async hover(ctx, args) {
+    const page = await ctx.page();
+    const node = await ctx.resolve(page, args.join(" "));
+    await ctx.willMutate(page);
+    if (node.pt) await page.mouse("mouseMoved", node.pt);
+    else await page.hover(node);
+    await page.settle({ idleMax: 800 });
+    return `hovering ${node.ref}`;
+  },
+
+  async scroll(ctx, args) {
+    const page = await ctx.page();
+    const where = args[0] || "down";
+    await ctx.willMutate(page);
+    const m = await page.metrics();
+    if (where === "top") await page.eval("scrollTo(0, 0)");
+    else if (where === "bottom") await page.eval("scrollTo(0, document.documentElement.scrollHeight)");
+    else if (where === "down" || where === "up") {
+      const pages = Math.max(0.1, Number(args[1] || 1) || 1);
+      await page.wheel((where === "down" ? 1 : -1) * Math.round(m.h * 0.85 * pages));
+    } else {
+      const node = await ctx.resolve(page, where);
+      if (node.pt) await page.wheel(Math.round(m.h * 0.85) * (Number(args[1] || 1) || 1), node.pt);
+      else await page.locate(node);
+    }
+    await page.settle({ idleMax: 1500 });
+    const after = await page.metrics();
+    return `scrolled to ${after.y}/${Math.max(after.max, 0)}px${after.max > 0 && after.y >= after.max - 2 ? " (bottom)" : after.y === 0 ? " (top)" : ""}`;
+  },
+
+  async upload(ctx, args) {
+    const page = await ctx.page();
+    const node = await ctx.resolve(page, args[0]);
+    const files = args.slice(1).map((f) => resolvePath(f.replace(/^~(?=\/|$)/, homedir())));
+    if (!files.length) throw new PibError("usage: pib upload <target> <file>...");
+    for (const f of files) if (!existsSync(f) || !statSync(f).isFile()) throw new PibError(`no such file: ${f}`);
+    await ctx.willMutate(page);
+    const sid = node.f ? page.kids.get(node.f)?.sessionId : page.sessionId;
+    const isInput = !node.pt && (await page.callOn(node, `function () { return this.tagName === "INPUT" && this.type === "file"; }`));
+    if (isInput) {
+      await page.cdp.send("DOM.setFileInputFiles", { files, backendNodeId: node.b }, sid);
+    } else {
+      // A button that opens the native file chooser: intercept the chooser instead of showing it.
+      await page.send("Page.setInterceptFileChooserDialog", { enabled: true });
+      try {
+        const opened = page.cdp.once((m) => m.sessionId === page.sessionId && m.method === "Page.fileChooserOpened", 6000);
+        if (node.pt) await page.clickAt(node.pt);
+        else await page.click(node);
+        const ev = await opened;
+        if (!ev) throw new PibError(`clicking ${node.ref} did not open a file chooser`, "target the <input type=file> itself (pib snap shows it as type=file)");
+        await page.send("DOM.setFileInputFiles", { files, backendNodeId: ev.params.backendNodeId });
+      } finally {
+        await page.send("Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+      }
+    }
+    await page.settle({ idleMax: 2000 });
+    return `attached ${files.length} file${files.length === 1 ? "" : "s"} to ${node.ref}`;
+  },
+
+  async download(ctx, args) {
+    const page = await ctx.page();
+    const dir = resolvePath((takeOpt(args, "--to") || join(homedir(), "Downloads", "pib")).replace(/^~(?=\/|$)/, homedir()));
+    const timeout = Number(takeOpt(args, "--timeout") || 120000);
+    const node = await ctx.resolve(page, args.join(" "));
+    mkdirSync(dir, { recursive: true });
+    const seen = new Map();
+    const off = page.cdp.on((m) => {
+      if (m.method === "Browser.downloadWillBegin") seen.set(m.params.guid, { name: m.params.suggestedFilename, state: "inProgress" });
+      else if (m.method === "Browser.downloadProgress" && seen.has(m.params.guid)) seen.get(m.params.guid).state = m.params.state;
+    });
+    await page.cdp.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: dir, eventsEnabled: true });
+    try {
+      await ctx.willMutate(page);
+      if (node.pt) await page.clickAt(node.pt);
+      else await page.click(node);
+      const t0 = Date.now();
+      while (!seen.size && Date.now() - t0 < 8000) await sleep(100);
+      if (!seen.size) throw new PibError(`clicking ${node.ref} did not start a download`);
+      const d = [...seen.values()][0];
+      while (d.state === "inProgress" && Date.now() - t0 < timeout) await sleep(150);
+      if (d.state !== "completed") throw new PibError(`download ${d.state === "inProgress" ? "still running after " + timeout + "ms" : d.state}: ${d.name}`);
+      return `downloaded ${join(dir, d.name)}`;
+    } finally {
+      off();
+      await page.cdp.send("Browser.setDownloadBehavior", { behavior: "default", eventsEnabled: false }).catch(() => {});
+    }
+  },
+
+  // Secret entry: the value arrives on stdin and goes straight to the field.
+  // Nothing derived from it is ever printed, and the field's value stays
+  // masked in later snapshots.
+  async secret(ctx, args) {
+    const keep = takeFlag(args, "--no-clear");
+    const page = await ctx.page();
+    const node = await ctx.resolve(page, args[0]);
+    if (node.pt) throw new PibError("secret needs an element, not coordinates");
+    let secret = readStdin().replace(/\r?\n$/, "");
+    if (!secret) throw new PibError("empty secret on stdin");
+    await ctx.willMutate(page);
+    ctx.hideText = true;
+    const kind = await page.callOn(node, FIELD_KIND);
+    if (kind !== "text") throw new PibError(`${node.ref} is not a text or password field`);
+    const saved = ctx.saved(page);
+    if (saved && /^e\d+$/.test(node.ref)) saved.hidden = [...new Set([...(saved.hidden || []), node.ref.slice(1)])];
+    await focusForTyping(page, node);
+    if (!keep) await page.press("Delete", node);
+    await page.typeKeys(secret, node);
+    const ok = await page.callOn(node, `function (n) { return this.value.length === n; }`, [secret.length]);
+    secret = null;
+    await page.settle({ idleMax: 800 });
+    return ok ? `secret typed into ${node.ref}` : `secret typed into ${node.ref}, but the field's length does not match (the page may have altered it)`;
+  },
+
+  async text(ctx, args) {
+    const max = Number(takeOpt(args, "--max") || 4000);
+    const page = await ctx.page();
+    let t;
+    if (args[0]) {
+      const node = await ctx.resolve(page, args.join(" "));
+      if (node.pt) throw new PibError("text needs an element, not coordinates");
+      t = await page.callOn(node, `function () { if (this.type === "password") return "(hidden: password field)"; return this.value !== undefined && this.value !== "" && !this.innerText ? String(this.value) : (this.innerText ?? this.textContent ?? ""); }`);
+    } else t = await page.eval("document.body ? document.body.innerText : ''");
+    t = String(t).replace(/\n{3,}/g, "\n\n").trim();
+    return t ? clip(t, max) : "(no text)";
+  },
+
+  async read(ctx, args) {
+    const max = Number(takeOpt(args, "--max") || 6000);
+    const filter = takeOpt(args, "--filter") || "";
+    const links = takeFlag(args, "--links");
+    const page = await ctx.page();
+    const r = await page.eval(`${READER}(${JSON.stringify(filter)}, ${max}, ${links})`);
+    if (!r || !r.text) return filter ? `(nothing on the page mentions ${JSON.stringify(filter)})` : "(no readable text)";
+    return r.text + (r.total > max ? `\n… (${r.total - max} more chars; raise --max or use --filter)` : "");
+  },
+
+  async html(ctx, args) {
+    const max = Number(takeOpt(args, "--max") || 4000);
+    const page = await ctx.page();
+    let h;
+    if (args[0]) {
+      const node = await ctx.resolve(page, args.join(" "));
+      h = await page.callOn(node, "function () { return this.outerHTML; }");
+    } else h = await page.eval("document.documentElement.outerHTML");
+    return clip(String(h), max);
+  },
+
+  async eval(ctx, args) {
+    const main = takeFlag(args, "--main");
+    const max = Number(takeOpt(args, "--max") || 4000);
+    let src = args.join(" ");
+    if (src === "-" || src === "") src = readStdin();
+    const page = await ctx.page();
+    ctx.mutated = false; // an eval is not reported as a page action; say so explicitly if it changes things
+    let v;
+    try {
+      v = await page.eval(src, { main });
+    } catch (err) {
+      // Statement lists ("const a = 1; a + 1") are not expressions: run them as a function body.
+      if (!/SyntaxError/.test(err.message)) throw err;
+      v = await page.eval(`(async () => { ${src}\n})()`, { main });
+    }
+    if (v === undefined) return "undefined";
+    return clip(typeof v === "string" ? v : JSON.stringify(v, null, 1), max);
+  },
+
+  async get(ctx, args) {
+    const what = need(args[0], "get url|title|value <target>|attr <target> <name>|count <css>");
+    const page = await ctx.page();
+    if (what === "url" || what === "title") return (await page.info())[what] || "";
+    if (what === "count") return String((await page.query(need(args[1], "get count <css>"))).count);
+    const node = await ctx.resolve(page, args[1]);
+    const secret = /^e\d+$/.test(node.ref) && ctx.saved(page)?.hidden?.includes(node.ref.slice(1));
+    if (what === "value") return secret ? "(hidden: entered with pib secret)" : String(await page.callOn(node, SHOWN_VALUE));
+    if (what === "attr") return String(await page.callOn(node, "function (n) { return this.getAttribute(n); }", [need(args[2], "get attr <target> <name>")]));
+    if (what === "box") return JSON.stringify(await page.locate(node));
+    throw new PibError(`unknown: get ${what}`, "get url|title|value <target>|attr <target> <name>|count <css>");
+  },
+
+  async wait(ctx, args) {
+    const timeout = Number(takeOpt(args, "--timeout") || 15000);
+    const what = need(args[0], "wait <ms> | text <s> | gone <s> | sel <css> | url <part> | load");
+    const page = await ctx.page();
+    const arg = args.slice(1).join(" ");
+    await ctx.willMutate(page); // so the report shows what appeared while waiting
+    if (/^\d+$/.test(what)) {
+      await sleep(Math.min(Number(what), 60000));
+      return `waited ${what}ms`;
+    }
+    const t0 = Date.now();
+    const done = () => `ok after ${Date.now() - t0}ms`;
+    const has = `(document.body ? document.body.innerText : "").toLowerCase().includes(${JSON.stringify(arg.toLowerCase())})`;
+    if (what === "text") {
+      need(arg, "wait text <text>");
+      await page.waitFor(() => page.eval(has), { timeout, what: `text ${JSON.stringify(arg)}` });
+    } else if (what === "gone") {
+      need(arg, "wait gone <text>");
+      await page.waitFor(async () => !(await page.eval(has)), { timeout, what: `${JSON.stringify(arg)} to disappear` });
+    } else if (what === "sel") {
+      need(arg, "wait sel <css>");
+      await page.waitFor(() => page.eval(`!!document.querySelector(${JSON.stringify(arg)})`), { timeout, what: `selector ${arg}` });
+    } else if (what === "url") {
+      need(arg, "wait url <part>");
+      await page.waitFor(async () => (await page.info()).url.includes(arg), { timeout, what: `url containing ${JSON.stringify(arg)}` });
+    } else if (what === "load" || what === "idle") {
+      await page.waitFor(() => page.eval(`document.readyState === "complete"`), { timeout, what: "the page to finish loading" });
+      await page.settle();
+    } else throw new PibError(`unknown: wait ${what}`, "wait <ms> | text <s> | gone <s> | sel <css> | url <part> | load");
+    return done();
+  },
+
+  async shot(ctx, args) {
+    const full = takeFlag(args, "--full");
+    const el = takeOpt(args, "--el");
+    const page = await ctx.page();
+    const jpeg = takeFlag(args, "--jpeg") || /\.jpe?g$/i.test(args[0] || "");
+    let file = args[0];
+    if (!file) {
+      const dir = join(tmpdir(), "pib");
+      mkdirSync(dir, { recursive: true });
+      file = join(dir, `shot-${new Date().toISOString().replace(/[:.]/g, "-")}.${jpeg ? "jpg" : "png"}`);
+    }
+    file = resolvePath(file.replace(/^~(?=\/|$)/, homedir()));
+    mkdirSync(dirname(file), { recursive: true });
+    const params = { format: jpeg ? "jpeg" : "png", ...(jpeg ? { quality: 80 } : {}) };
+    let w, h;
+    if (el) {
+      const node = await ctx.resolve(page, el);
+      await page.locate(node);
+      const sid = node.f ? page.kids.get(node.f)?.sessionId : page.sessionId;
+      const { model } = await page.cdp.send("DOM.getBoxModel", { backendNodeId: node.b }, sid);
+      const m = await page.eval("({ x: scrollX, y: scrollY })");
+      [w, h] = [model.width, model.height];
+      params.clip = { x: model.border[0] + m.x, y: model.border[1] + m.y, width: w, height: h, scale: 1 };
+    } else if (full) {
+      const { cssContentSize: s } = await page.send("Page.getLayoutMetrics");
+      [w, h] = [Math.ceil(s.width), Math.min(Math.ceil(s.height), 12000)];
+      params.clip = { x: 0, y: 0, width: w, height: h, scale: w > 1280 ? 1280 / w : 1 };
+      params.captureBeyondViewport = true;
+    } else {
+      const m = await page.metrics();
+      [w, h] = [m.w, m.h];
+      if (w > 1280) params.clip = { x: 0, y: m.y, width: w, height: h, scale: 1280 / w };
+    }
+    // A window that is not on top renders lazily; bring it forward first or the capture can stall.
+    let data;
+    for (let attempt = 0; attempt < 2 && !data; attempt++) {
+      await page.send("Page.bringToFront").catch(() => {});
+      await sleep(120);
+      data = await page.send("Page.captureScreenshot", params, 8000).then((r) => r.data, () => null);
+    }
+    if (!data) throw new PibError("the screenshot timed out twice", "the tab may be blocked by a dialog; pib status");
+    const buf = Buffer.from(data, "base64");
+    writeFileSync(file, buf);
+    const scale = params.clip?.scale || 1;
+    return `saved ${file}  (${Math.round(w * scale)}x${Math.round(h * scale)}, ${Math.round(buf.length / 1024)} KB)`;
+  },
+
+  async back(ctx, _args, delta = -1) {
+    const page = await ctx.page();
+    const { currentIndex, entries } = await page.send("Page.getNavigationHistory");
+    const entry = entries[currentIndex + delta];
+    if (!entry) throw new PibError(delta < 0 ? "no earlier page in this tab's history" : "no later page in this tab's history");
+    ctx.mutated = true;
+    ctx.listAfter = true;
+    await page.send("Page.navigateToHistoryEntry", { entryId: entry.id });
+    await sleep(150);
+    await page.settle();
+    return "";
+  },
+  forward(ctx, args) {
+    return COMMANDS.back(ctx, args, 1);
+  },
+  async reload(ctx) {
+    const page = await ctx.page();
+    ctx.mutated = true;
+    ctx.listAfter = true;
+    const loaded = page.cdp.once((m) => m.sessionId === page.sessionId && m.method === "Page.loadEventFired", 30000);
+    await page.send("Page.reload");
+    await loaded;
+    await page.settle();
+    return "";
+  },
+
+  async tabs(ctx) {
+    const targets = await ctx.targets();
+    const owners = new Map();
+    for (const s of State.all()) for (const id of s.tabs) owners.set(id, s.key);
+    if (!targets.length) return "(no tabs)";
+    const rows = targets.map((t) => {
+      const owner = owners.get(t.targetId);
+      const mark = t.targetId === ctx.state.current ? "*" : owner === ctx.state.key ? "+" : owner ? "o" : " ";
+      return `${mark} ${short(t.targetId)}  ${(t.title || "(untitled)").slice(0, 44).padEnd(44)}  ${t.url.slice(0, 90)}`;
+    });
+    return rows.join("\n") + "\n\n* current   + this session   o another session   (blank) unowned";
+  },
+
+  async tab(ctx, args) {
+    const sub = need(args[0], "tab new [url] | tab use <id> | tab close [id]");
+    const find = async (prefix) => {
+      const hits = (await ctx.targets()).filter((t) => t.targetId.toLowerCase().startsWith(prefix.toLowerCase()));
+      if (!hits.length) throw new PibError(`no tab id starts with ${prefix}`, "pib tabs");
+      if (hits.length > 1) throw new PibError(`${hits.length} tabs start with ${prefix}`, "give more characters of the id");
+      return hits[0].targetId;
+    };
+    if (sub === "new") {
+      await ctx.newTab();
+      if (args[1]) return COMMANDS.open(ctx, [args[1]]);
+      return `new tab ${short(ctx.state.current)}`;
+    }
+    if (sub === "use") {
+      const id = await find(need(args[1], "tab use <id>"));
+      const other = State.all().find((s) => s.key !== ctx.state.key && s.tabs.includes(id));
+      if (!ctx.state.tabs.includes(id)) ctx.state.tabs.push(id);
+      ctx.state.current = id;
+      ctx.attached = null;
+      ctx.mutated = true;
+      ctx.listAfter = true;
+      await ctx.page();
+      return `now on tab ${short(id)}${other ? ` (note: session ${other.key.slice(0, 12)} also uses it)` : ""}`;
+    }
+    if (sub === "close") {
+      const id = args[1] ? await find(args[1]) : ctx.state.current;
+      if (!id) throw new PibError("no tab to close");
+      await ctx.cdp.send("Target.closeTarget", { targetId: id });
+      ctx.state.tabs = ctx.state.tabs.filter((t) => t !== id);
+      delete ctx.state.pages[id];
+      if (ctx.state.current === id) {
+        ctx.state.current = ctx.state.tabs.at(-1) || null;
+        ctx.attached = null;
+      }
+      return `closed ${short(id)}${ctx.state.current ? `; now on ${short(ctx.state.current)}` : "; this session has no tab now"}`;
+    }
+    throw new PibError(`unknown: tab ${sub}`, "tab new [url] | tab use <id> | tab close [id]");
+  },
+
+  async close(ctx) {
+    const n = ctx.state.tabs.length;
+    for (const id of ctx.state.tabs) await ctx.cdp.send("Target.closeTarget", { targetId: id }).catch(() => {});
+    ctx.state.tabs = [];
+    ctx.state.current = null;
+    ctx.state.pages = {};
+    ctx.attached = null;
+    ctx.dropState = true;
+    return `closed ${n} tab${n === 1 ? "" : "s"} of this session`;
+  },
+
+  // Close tabs left behind by sessions that have not touched the browser for a while.
+  async gc(ctx, args) {
+    const hours = Number(takeOpt(args, "--older") || 6);
+    const live = new Set((await ctx.targets()).map((t) => t.targetId));
+    let closed = 0;
+    let sessions = 0;
+    for (const s of State.all()) {
+      if (s.key === ctx.state.key) continue;
+      if (Date.now() - s.mtime < hours * 3600e3) continue;
+      for (const id of s.tabs) {
+        if (!live.has(id)) continue;
+        await ctx.cdp.send("Target.closeTarget", { targetId: id }).catch(() => {});
+        closed++;
+      }
+      State.remove(s.key);
+      sessions++;
+    }
+    return `closed ${closed} tab${closed === 1 ? "" : "s"} from ${sessions} session${sessions === 1 ? "" : "s"} idle for more than ${hours}h`;
+  },
+
+  async status(ctx) {
+    const targets = await ctx.targets();
+    const cur = targets.find((t) => t.targetId === ctx.state.current);
+    const lines = [
+      `browser: ${ctx.cdp.info.Browser} on 127.0.0.1:${ctx.cdp.port}`,
+      `session: ${ctx.state.key}`,
+      cur ? `tab:     ${short(cur.targetId)}  ${cur.title || "(untitled)"} | ${cur.url}` : "tab:     none yet (pib open <url>)",
+      `tabs:    ${ctx.state.tabs.length} owned by this session, ${targets.length} open in total`,
+    ];
+    return lines.join("\n");
+  },
+
+  async cdp(ctx, args) {
+    const browser = takeFlag(args, "--browser");
+    const max = Number(takeOpt(args, "--max") || 4000);
+    const method = need(args[0], "cdp <Domain.method> [json params] [--browser]");
+    let params = {};
+    if (args[1]) {
+      try {
+        params = JSON.parse(args.slice(1).join(" "));
+      } catch {
+        throw new PibError("the params are not valid JSON");
+      }
+    }
+    const r = browser ? await ctx.cdp.send(method, params) : await (await ctx.page()).send(method, params);
+    return clip(JSON.stringify(r, null, 1), max);
+  },
+
+  async help() {
+    return HELP;
+  },
+};
+
+// ---------------------------------------------------------------------------
+// main
+
+async function main() {
+  const argv = process.argv.slice(2);
+  const opts = { port: Number(process.env.PIB_PORT || 9222), quiet: false };
+  while (argv[0]?.startsWith("-")) {
+    const flag = argv.shift();
+    if (flag === "--port") opts.port = Number(argv.shift());
+    else if (flag === "--session") opts.session = argv.shift();
+    else if (flag === "-q" || flag === "--quiet") opts.quiet = true;
+    else if (flag === "--max") opts.max = Number(argv.shift());
+    else if (flag === "--accept") opts.accept = true;
+    else if (flag === "--prompt") {
+      opts.prompt = argv.shift();
+      opts.accept = true;
+    }
+    else if (flag === "-h" || flag === "--help") argv.unshift("help");
+    else throw new PibError(`unknown option ${flag}`, "pib help");
+  }
+  const name = argv.shift() || "help";
+  if (name === "help") {
+    process.stdout.write(HELP);
+    return 0;
+  }
+  if (name !== "run" && !COMMANDS[name]) throw new PibError(`unknown command "${name}"`, "pib help");
+
+  const cdp = await CDP.connect(opts.port);
+  const state = State.load(State.sessionKey(opts.session));
+  const ctx = new Ctx(cdp, state, opts);
+  let code = 0;
+  const out = [];
+  try {
+    await ctx.sync();
+    if (name === "run") {
+      const lines = readStdin().split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+      if (!lines.length) throw new PibError("pib run: no commands on stdin");
+      for (const [i, line] of lines.entries()) {
+        const tokens = tokenize(line);
+        if (tokens[0] === "pib") tokens.shift();
+        const cmd = tokens.shift();
+        const prompt = takeOpt(tokens, "--prompt");
+        ctx.policy.accept = !!opts.accept || takeFlag(tokens, "--accept") || prompt !== undefined;
+        ctx.policy.promptText = prompt ?? opts.prompt;
+        try {
+          if (!COMMANDS[cmd] || cmd === "help") throw new PibError(`unknown command "${cmd}"`, "pib help");
+          if (cmd === "secret") throw new PibError("secret cannot be used inside pib run (stdin is the command list)", "run it as its own call");
+          const r = await COMMANDS[cmd](ctx, tokens);
+          out.push(`[${i + 1}] ${line.length > 70 ? line.slice(0, 70) + "…" : line}${r ? "\n" + r : ""}`);
+        } catch (err) {
+          if (!(err instanceof PibError)) throw err;
+          out.push(`[${i + 1}] ${line}\nerror: ${err.message}${err.hint ? `\nhint: ${err.hint}` : ""}`);
+          if (i + 1 < lines.length) out.push(`stopped: ${lines.length - i - 1} later command${lines.length - i - 1 === 1 ? "" : "s"} not run`);
+          code = 1;
+          break;
+        }
+      }
+    } else {
+      const prompt = takeOpt(argv, "--prompt");
+      if (takeFlag(argv, "--accept") || prompt !== undefined) ctx.policy.accept = true;
+      if (prompt !== undefined) ctx.policy.promptText = prompt;
+      const r = await COMMANDS[name](ctx, argv);
+      if (r) out.push(r);
+    }
+    const rep = await ctx.report();
+    if (rep) out.push(rep);
+  } finally {
+    try {
+      if (ctx.dropState) State.remove(state.key);
+      else State.save(state);
+    } catch {}
+    cdp.close();
+  }
+  if (out.length) process.stdout.write(out.join("\n") + "\n");
+  return code;
+}
+
+main().then(
+  (code) => process.exit(code),
+  (err) => {
+    if (err instanceof PibError) process.stderr.write(`error: ${err.message}${err.hint ? `\nhint: ${err.hint}` : ""}\n`);
+    else process.stderr.write(`pib: internal error: ${err?.stack || err}\n`);
+    process.exit(err instanceof PibError ? 1 : 2);
+  },
+);

@@ -1,0 +1,64 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>pib fixture</title>
+<style>
+ body{font:14px sans-serif;margin:20px} .card{cursor:pointer;border:1px solid #999;padding:8px;width:200px}
+ #overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);display:none} #spacer{height:2500px}
+ .hovermenu .items{display:none} .hovermenu:hover .items{display:block}
+</style></head><body>
+<h1>Fixture</h1>
+<nav><a href="page2.html">Go to page two</a> <a href="page2.html" target="_blank">Open page two in new tab</a></nav>
+
+<h2>Form</h2>
+<form id="f" onsubmit="event.preventDefault();document.getElementById('out').textContent='submitted:'+JSON.stringify(Object.fromEntries(new FormData(this)))">
+ <label>Email <input id="email" name="email" type="email" required></label>
+ <label>Password <input id="pw" name="pw" type="password"></label>
+ <label>Controlled <input id="ctl" name="ctl"></label>
+ <label>Notes <textarea id="notes" name="notes"></textarea></label>
+ <label>Country <select id="country" name="country"><option value="">--</option><option value="ch">Switzerland</option><option value="de">Germany</option><option value="fr">France</option></select></label>
+ <label><input id="agree" name="agree" type="checkbox"> I agree</label>
+ <label><input type="radio" name="plan" value="a"> Plan A</label><label><input type="radio" name="plan" value="b"> Plan B</label>
+ <label>When <input id="date" name="date" type="date"></label>
+ <label>File <input id="file" name="file" type="file"></label>
+ <div id="editor" contenteditable="true" role="textbox" aria-label="Rich editor" style="border:1px solid #ccc;min-height:20px"></div>
+ <button type="submit">Save form</button>
+</form>
+<pre id="out"></pre>
+
+<h2>Dynamic</h2>
+<button id="reveal" onclick="setTimeout(()=>{const b=document.createElement('button');b.textContent='Late button';b.onclick=()=>document.getElementById('log').textContent+='late-clicked;';document.getElementById('dyn').append(b)},700)">Reveal later</button>
+<div id="dyn"></div>
+<div class="card" id="card" onclick="document.getElementById('log').textContent+='card-clicked;'">Clickable card (div)</div>
+<div id="reactish"></div>
+<button id="covered" onclick="document.getElementById('log').textContent+='covered-clicked;'">Covered button</button>
+<button id="showoverlay" onclick="document.getElementById('overlay').style.display='block';setTimeout(()=>document.getElementById('overlay').style.display='none',900)">Show overlay briefly</button>
+<button id="stickoverlay" onclick="document.getElementById('overlay').style.display='block'">Show overlay forever</button>
+<button id="alert" onclick="alert('hello from alert');document.getElementById('log').textContent+='alert-done;'">Alert</button>
+<button id="confirm" onclick="document.getElementById('log').textContent+='confirm='+confirm('Really?')+';'">Confirm</button>
+<button id="trusted" onclick="document.getElementById('log').textContent+='trusted='+event.isTrusted+';'">Trusted check</button>
+<a id="dl" href="data.csv" download="data.csv">Download CSV</a>
+<div class="hovermenu">Hover me<div class="items"><button onclick="document.getElementById('log').textContent+='menu-clicked;'">Hidden menu item</button></div></div>
+<pre id="log"></pre>
+
+<h2>Shadow DOM</h2>
+<div id="host-open"></div><div id="host-closed"></div>
+
+<h2>Frames</h2>
+<iframe id="same" src="frame.html" width="400" height="90" title="same-origin frame"></iframe>
+<iframe id="cross" width="400" height="90" title="cross-site frame"></iframe>
+
+<div id="spacer"></div>
+<button id="bottom" onclick="document.getElementById('log').textContent+='bottom-clicked;'">Bottom button</button>
+<div id="overlay"></div>
+<script>
+ window.pageGlobal = {answer: 42};
+ // "controlled" input: mimics React by keeping its own state and re-rendering value from it on every input event
+ (()=>{const el=document.getElementById('ctl');let state='';el.addEventListener('input',e=>{state=e.target.value.toUpperCase();el.value=state;document.title='ctl:'+state});})();
+ for (const [id,mode] of [['host-open','open'],['host-closed','closed']]) {
+   const r=document.getElementById(id).attachShadow({mode}); const b=document.createElement('button');
+   b.textContent='Shadow '+mode+' button'; b.onclick=()=>document.getElementById('log').textContent+='shadow-'+mode+';'; r.append(b);
+   const i=document.createElement('input'); i.setAttribute('aria-label','Shadow '+mode+' input'); r.append(i);
+ }
+ // cross-site: same server, but 127.0.0.1 vs localhost are different sites, so this is an out-of-process iframe
+ const other = location.hostname==='localhost' ? '127.0.0.1' : 'localhost';
+ document.getElementById('cross').src = location.protocol+'//'+other+':'+location.port+'/frame.html?cross=1';
+ window.addEventListener('message',e=>{document.getElementById('log').textContent+='msg:'+e.data+';'});
+</script></body></html>

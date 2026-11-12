@@ -1,0 +1,4 @@
+<!doctype html><html><head><meta charset="utf-8"><title>frame</title></head><body style="font:13px sans-serif">
+<button id="fb" onclick="document.getElementById('fo').textContent='frame-clicked trusted='+event.isTrusted;parent.postMessage('frame-button','*')">Frame button</button>
+<input id="fi" aria-label="Frame input" oninput="document.getElementById('fo').textContent='typed:'+this.value">
+<span id="fo"></span></body></html>
