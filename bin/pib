@@ -324,6 +324,7 @@ const FIELD_KIND = `function () {
   if (this.isContentEditable) return "rich";
   return "other";
 }`;
+const READ_CHECKED = `function () { return "checked" in this && this.type !== undefined ? this.checked : this.getAttribute("aria-checked") ?? this.getAttribute("aria-pressed"); }`;
 const FIELD_VALUE = `function () { return this.isContentEditable ? this.innerText : this.value; }`;
 // For printing: never hand a password field's content back to the caller.
 const SHOWN_VALUE = `function () { return this.type === "password" ? "(hidden: password field)" : this.isContentEditable ? this.innerText : this.value; }`;
@@ -491,13 +492,16 @@ const COMMANDS = {
   async check(ctx, args, want = true) {
     const page = await ctx.page();
     const node = await ctx.resolve(page, args.join(" "));
-    const state = await page.callOn(node, `function () { return "checked" in this && this.type !== undefined ? this.checked : this.getAttribute("aria-checked") ?? this.getAttribute("aria-pressed"); }`);
+    const state = await page.callOn(node, READ_CHECKED);
     const is = state === true || state === "true";
     if (state === null || state === undefined) throw new PibError(`${node.ref} is not a checkbox, radio or switch`, "pib click <target>");
     if (is === want) return `${node.ref} is already ${want ? "checked" : "unchecked"}`;
     await ctx.willMutate(page);
     await page.click(node);
     await page.settle({ idleMax: 1200 });
+    // Say "checked" only if it is: a click can land beside a restyled control.
+    const now = await page.callOn(node, READ_CHECKED);
+    if ((now === true || now === "true") !== want) throw new PibError(`clicked ${node.ref}, but it is still ${want ? "unchecked" : "checked"}`, "the visible control may be a separate element: pib snap --find its label and click that");
     return `${want ? "checked" : "unchecked"} ${node.ref}`;
   },
   uncheck(ctx, args) {

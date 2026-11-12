@@ -2,8 +2,8 @@
 
 Browser access for Pi: one real, logged-in Chrome, driven from the shell.
 
-`pib` is the proposed successor to `pi-browser` + the `agent_browser` tool.
-It is built and tested, but **not the default yet** - see [CUTOVER.md](CUTOVER.md).
+`pib` replaced `pi-browser` + the `agent_browser` tool on 2026-11-12
+([CUTOVER.md](CUTOVER.md) records what was switched and how to go back).
 
 ```
 pib open https://dash.cloudflare.com     # this session's own tab; lists what is on the page
@@ -126,7 +126,7 @@ Google's signature on the apt `Release` file and the hash chain down to the
 ## Tests
 
 ```
-test/run.sh        # 117 end-to-end checks against test/fixture, in a throwaway Chrome on port 9557
+test/run.sh        # 123 end-to-end checks against test/fixture, in a throwaway Chrome on port 9557
 ```
 
 Covers forms (text, controlled inputs, date, contenteditable, select, upload),

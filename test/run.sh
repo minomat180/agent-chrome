@@ -65,6 +65,8 @@ has "check"                "checked"                     pib check "#agree"
 has "check is idempotent"  "already checked"             pib check "#agree"
 has "uncheck"              "unchecked"                   pib uncheck "#agree"
 has "fill on checkbox"     "pib check"                   pib fill "#agree" x
+has "styled checkbox (invisible input under its label)" "checked" pib check "#cc"
+has "styled checkbox took" "true"                        pib eval 'document.querySelector("#cc").checked'
 has "upload"               "attached 1 file"             pib upload "#file" "$ROOT/test/fixture/data.csv"
 has "upload missing file"  "no such file"                pib upload "#file" /nonexistent/file
 has "submit"               'submitted:{"email":"mino@example.com"' pib click "text=Save form"

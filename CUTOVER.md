@@ -1,60 +1,42 @@
-# Cutover: pi-browser -> pib
+# Cutover: pi-browser -> pib (done 2026-11-12)
 
-Nothing below has been done. Until it is, `pi-chrome` owns the browser on 9222
-and `agent_browser` is the default tool. `pib` already works against that
-browser as it is (same port, same profile), so it can be tried first:
+What was switched, in order, and how to undo it.
 
-```
-pib open https://example.com && pib close
-```
+| Step | What | Undo |
+|---|---|---|
+| 1 | `pi-chrome stop`; profile copied to `~/.local/share/pi-browser/chrome-profile.bak-151-20261112` (1.2 GB); `pib-chrome start` on the same profile and port with the private Chrome 157 | see "Going back" |
+| 2 | `~/.config/mango/autostart.sh`: `pi-chrome start` -> `pib-chrome start` | `autostart.sh.bak-20261112-pre-pib` |
+| 3 | Skill linked: `~/.pi/agent/skills/pib -> ~/Projects/pib/skill` | remove the link |
+| 4 | `pi remove npm:pi-agent-browser-native` (the `agent_browser` tool) | `pi install npm:pi-agent-browser-native`; `settings.json.bak-20261112-pre-pib` |
+| 5 | `~/.bashrc`: dropped the `PI_AGENT_BROWSER_INLINE_IMAGE_MAX_BYTES` block | `.bashrc.bak-20261112-pre-pib` |
+| 6 | `~/.pi/agent/AGENTS.md`: registry entry, hard-rule wording, subagent cleanup, browser notes rewritten for pib | `AGENTS.md.bak-20261112-pre-pib` |
+| 7 | `~/.local/bin/pi-chrome` now points at `bin/pi-chrome-shim`, which forwards to `pib-chrome` | relink to `~/Projects/pi-browser/bin/pi-chrome` |
+| 8 | `~/Projects/pi-browser/README.md` and `~/vault/pi-browser-memory/agent-browser-manual.md` marked archived / obsolete | - |
 
-Do the steps in order when no other session is using the browser.
+Left in place on purpose:
 
-1. **Stop the old browser, start the new one** (same profile, so every login carries over):
+- `~/Projects/pi-browser` (archived, rollback material) and `~/.local/bin/browser-login` (still works against the new browser; superseded by `pib secret`).
+- The `agent-browser` binary in `~/.local` (`npm rm -g agent-browser` removes it). Pi sessions that were already running during the cutover still have the old tool loaded; restart them, or tell them to use `pib`.
+- `/opt/google/chrome` (151): used by `google-chrome` for pptx-maker and hallmark. Updating it needs root and is a separate decision.
 
-   ```
-   pi-chrome stop
-   pib-chrome start
-   pib-chrome status        # expect: UP, background mode, chrome 157.x
-   ```
+## Going back
 
-   One-way step: the profile gets opened by Chrome 157. Chrome normally refuses
-   to open a profile with an older version afterwards (expected behaviour, not
-   tested here), so going back to pi-chrome means
-   pointing it at the new binary too:
-   `PI_CHROME_BIN=~/.local/share/pib/chrome/current/chrome pi-chrome start`.
-   To keep a way back to 151, copy the profile first:
-   `cp -a ~/.local/share/pi-browser/chrome-profile ~/.local/share/pi-browser/chrome-profile.bak-151`
+The profile has been opened by Chrome 157. Chrome normally refuses to open a
+profile with an older version (expected behaviour, not tested here), so there
+are two ways back:
 
-2. **Autostart**: in `~/.config/mango/autostart.sh` replace the `pi-chrome start` line with `pib-chrome start`.
+- Old launcher, new Chrome: `pib-chrome stop`, relink step 7, then
+  `PI_CHROME_BIN=~/.local/share/pib/chrome/current/chrome pi-chrome start`.
+- Everything as it was, including Chrome 151: `pib-chrome stop`, move the
+  current profile aside, rename the `.bak-151-20261112` copy back to
+  `chrome-profile`, undo steps 2 to 7. Logins made after the cutover are lost.
 
-3. **Make the skill visible to every session**:
+Delete the profile backup once pib has proven itself; it holds live session cookies.
 
-   ```
-   ln -s ~/Projects/pib/skill ~/.pi/agent/skills/pib
-   ```
+## After the cutover
 
-4. **Remove the old tool** so sessions stop reaching for it:
-
-   ```
-   pi remove npm:pi-agent-browser-native
-   ```
-
-   and drop `export PI_AGENT_BROWSER_INLINE_IMAGE_MAX_BYTES=20480` from `~/.bashrc`.
-   The `agent-browser` binary in `~/.local` can stay or go (`npm rm -g agent-browser`); nothing needs it.
-
-5. **`~/.pi/agent/AGENTS.md`**: replace the `pi-browser` registry entry and the
-   "agent_browser usage lessons" section with a pointer to the pib skill; keep
-   "HARD RULES FOR BROWSER USE" and "USE THE BROWSER AND THE VAULT" as they are,
-   with `browser-login` replaced by `pib secret`. Update the subagent leak check
-   (no more `agent-browser-linux-x64` orphans or `/tmp/agent-browser-chrome-*`).
-
-6. **Other users of the old pieces** - check before deleting anything:
-   - `~/Projects/pi-browser/bin/browser-login` and `grab-secret-to-file` (superseded by `pib secret` / `pib eval`)
-   - `~/vault/pi-browser-memory/agent-browser-manual.md` (obsolete after cutover)
-   - T3 Code driving via `connect 9333` used `agent_browser`; with pib it is `PIB_PORT=9333 pib ...`
-
-7. **Archive, don't delete**: leave `~/Projects/pi-browser` in place for a week or two.
-
-Rollback before step 4 is just: `pib-chrome stop`, restore the autostart line,
-`pi-chrome start` (with the `PI_CHROME_BIN` note from step 1).
+- Keep Chrome current: `pib-chrome status` warns when it is a major version
+  behind; `pib-chrome update && pib-chrome restart` fixes it (the restart
+  closes every session's tabs).
+- Any browser restart signs out sites whose login is a session-only cookie.
+  Tick "Remember me" when signing in.
