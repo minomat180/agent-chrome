@@ -11,7 +11,7 @@ What was switched, in order, and how to undo it.
 | 5 | `~/.bashrc`: dropped the `PI_AGENT_BROWSER_INLINE_IMAGE_MAX_BYTES` block | `.bashrc.bak-20261112-pre-pib` |
 | 6 | `~/.pi/agent/AGENTS.md`: registry entry, hard-rule wording, subagent cleanup, browser notes rewritten for pib | `AGENTS.md.bak-20261112-pre-pib` |
 | 7 | `~/.local/bin/pi-chrome` now points at `bin/pi-chrome-shim`, which forwards to `pib-chrome` | relink to `~/Projects/pi-browser/bin/pi-chrome` |
-| 8 | `~/Projects/pi-browser/README.md` and `~/vault/pi-browser-memory/agent-browser-manual.md` marked archived / obsolete | - |
+| 8 | `~/Projects/pi-browser/README.md` marked archived; the old manual in the vault was deleted 2026-11-12 | - |
 
 Left in place on purpose:
 
