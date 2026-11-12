@@ -132,6 +132,11 @@ has "get count"             "2"                  pib get count iframe
 has "html"                  "<h1>Fixture</h1>"   pib html h1
 has "read"                  "# Fixture"          pib read
 has "read --filter"         "## Shadow DOM"      pib read --filter shadow
+has "read --outline"        "## Frames"          pib read --outline
+hasnt "read --outline"      "Go to page two"     pib read --outline
+has "read <url>"            "You made it to page two" pib read $F/page2.html
+has "read <url> drops refs" "no snapshot yet"    pib click e3
+pib -q open $F/index.html >/dev/null
 
 # --- keys, scrolling, screenshots, downloads ----------------------------------
 pib -q click "#notes" >/dev/null

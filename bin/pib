@@ -29,7 +29,7 @@ const HELP = `pib - drive the agent's logged-in Chrome (one tab per session, ref
   pib download <target>          click something that downloads; prints the saved path  [--to DIR]
   pib secret <target>            type a secret from STDIN into a field; never echoed
   pib text [target]              visible text of the page or one element   [--max N]
-  pib read [--filter TEXT]       readable article-style text   [--links] [--max N]
+  pib read [url] [--filter TEXT] readable article-style text   [--outline] [--links] [--max N]
   pib html [target]              outer HTML   [--max N]
   pib eval <js>                  evaluate (isolated world).  --main for page globals,  - reads stdin
   pib get url|title|value <t>|attr <t> <name>|count <css>
@@ -634,10 +634,26 @@ const COMMANDS = {
     const max = Number(takeOpt(args, "--max") || 6000);
     const filter = takeOpt(args, "--filter") || "";
     const links = takeFlag(args, "--links");
+    const outline = takeFlag(args, "--outline");
+    let head = "";
+    if (args[0]) {
+      // `pib read <url>`: go there first, then read. One call for "what does this page say".
+      await COMMANDS.open(ctx, [args[0]]);
+      ctx.mutated = false; // the text is the answer; an element list on top would be noise
+      const page = await ctx.page();
+      const info = await page.info();
+      // The open happened without a report, so refs from an earlier page must not survive it.
+      delete ctx.state.pages[page.targetId];
+      head = `page: ${info.title || "(untitled)"} | ${info.url}\n`;
+    }
     const page = await ctx.page();
-    const r = await page.eval(`${READER}(${JSON.stringify(filter)}, ${max}, ${links})`);
-    if (!r || !r.text) return filter ? `(nothing on the page mentions ${JSON.stringify(filter)})` : "(no readable text)";
-    return r.text + (r.total > max ? `\n… (${r.total - max} more chars; raise --max or use --filter)` : "");
+    const r = await page.eval(`${READER}(${JSON.stringify(filter)}, ${outline ? 400000 : max}, ${links})`);
+    if (!r || !r.text) return head + (filter ? `(nothing on the page mentions ${JSON.stringify(filter)})` : "(no readable text)");
+    if (outline) {
+      const heads = r.text.split("\n").filter((l) => /^#{1,6} /.test(l));
+      return head + (heads.length ? clip(heads.join("\n"), max) : "(the page has no headings)");
+    }
+    return head + r.text + (r.total > max ? `\n… (${r.total - max} more chars; raise --max, or narrow with --filter / --outline)` : "");
   },
 
   async html(ctx, args) {

@@ -51,7 +51,7 @@ EOF
 | Dropdown, checkbox | `pib select <target> <label>` · `pib check <target>` · `pib uncheck <target>` |
 | Hover, scroll | `pib hover <target>` · `pib scroll down\|up\|top\|bottom\|<target>` |
 | Files | `pib upload <target> <file>` · `pib download <target> [--to DIR]` |
-| Read | `pib text [target]` · `pib read [--filter TEXT] [--links]` · `pib html [target]` |
+| Read | `pib text [target]` · `pib read [url] [--filter TEXT] [--outline] [--links]` · `pib html [target]` |
 | One value | `pib get url\|title` · `pib get value <t>` · `pib get attr <t> <name>` · `pib get count <css>` |
 | JavaScript | `pib eval '<js>'` (add `--main` to see the page's own JS globals; `-` reads stdin) |
 | Wait | `pib wait text "..."` · `gone "..."` · `sel <css>` · `url <part>` · `load` · `1500` |

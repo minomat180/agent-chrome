@@ -1,0 +1,8 @@
+#!/bin/bash
+# pi-chrome was replaced by pib-chrome on 2026-11-12. The old script must not
+# run any more: it would start the outdated /opt Chrome on a profile that a
+# newer Chrome has already opened, and its `stop` signals by profile path.
+# This shim keeps the old command name working for habits and for sessions
+# that still have the old instructions in their context.
+echo "pi-chrome: replaced by pib-chrome; forwarding (pib-chrome $*)" >&2
+exec "$(dirname "$(readlink -f "$0")")/pib-chrome" "$@"
