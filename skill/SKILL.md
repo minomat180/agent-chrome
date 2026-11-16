@@ -99,11 +99,14 @@ anything with spaces or shell characters.
   conversation: do not `pib text` it. Write it straight to a file, e.g.
   `pib eval --main '<expr>' > /path/file` with `chmod 600`, and report only that
   it was saved.
-- The browser's clipboard is not connected to mino's desktop: a page's "Copy"
-  button followed by `wl-paste` yields nothing.
-- Before `pib-chrome login`, `background`, `restart` or `update`: they restart the
-  one shared browser, closing every session's tabs and signing out sites whose
-  login is a session-only cookie. Check `pib tabs` and say so first.
+- Clipboard: on Linux the browser's clipboard is not connected to mino's
+  desktop (a page's "Copy" button followed by `wl-paste` yields nothing). On
+  macOS it is the normal system clipboard (`pbpaste`), which is mino's too:
+  do not leave secrets on it.
+- Before `pib-chrome restart` or `update` (and on Linux also `login` and
+  `background`): they restart the one shared browser, closing every session's
+  tabs and signing out sites whose login is a session-only cookie. Check
+  `pib tabs` and say so first.
 
 ## Passwords
 
@@ -111,9 +114,12 @@ Never type a credential yourself. Pipe it from the vault, so it goes
 vault -> field without entering this conversation:
 
 ```
-ipod_vault_use(label="web/example", reason="Sign in to example.com",
+vault_use(name="EXAMPLE_PASSWORD", reason="Sign in to example.com",
   command=["sh","-c","printf '%s' \"$PI_VAULT_SECRET\" | PIB_SESSION=<key> pib secret '#password'"])
 ```
+
+(On the Linux machine the web logins are in the iPod vault: `ipod_vault_use`
+with `label=` instead of `name=`, same command.)
 
 `<key>` is the `session:` line of `pib status` (the vault runs outside this
 shell, so it has to be told which session's tab to type into). Fill the
@@ -122,8 +128,9 @@ click the submit button. The field stays masked in every later report.
 
 If a site needs mino himself (2FA prompt on his phone, a captcha, a consent
 screen): stop and ask. `pib-chrome login <url>` shows the browser on his
-screen for that; `pib-chrome background` hides it again. Both restart the
-browser, which closes every session's tabs - say so first.
+screen for that; `pib-chrome background` hides it again. On macOS that keeps
+every tab; on Linux both restart the browser, which closes every session's
+tabs - say so first there.
 
 ## When something is off
 

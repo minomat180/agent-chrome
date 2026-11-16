@@ -111,6 +111,24 @@ current stable Chrome into `~/.local/share/pib/chrome/<version>` after checking
 Google's signature on the apt `Release` file and the hash chain down to the
 `.deb`. `pib-chrome status` warns when the running Chrome is a major version behind.
 
+## macOS
+
+`pib` itself is unchanged. `pib-chrome` hands over to `bin/pib-chrome-macos` on Darwin
+(same commands and env vars):
+
+- `pib-chrome update` installs Google's universal Chrome into `~/.local/share/pib/chrome/<version>`,
+  after checking the code signature (Google, Team ID `EQHXZ8M8AV`) and Gatekeeper/notarization.
+- No cage: background mode is Chrome launched hidden (`open -n -g -j`), so it never takes focus,
+  with `--disable-backgrounding-occluded-windows` so hidden tabs still render.
+- `login` shows the running browser and `background` hides it again (Cmd-H via System Events,
+  asks for that permission once). Neither restarts it, so tabs and session cookies survive.
+- Profile: `~/.local/share/pib/chrome-profile`. Window size is clamped to the screen.
+- `ctrl+a`/`meta+a` (and c, x, v, z) are sent as Cmd plus the editor command, since a synthetic
+  key event on macOS does not edit by itself and Ctrl+A there means "start of line".
+- Autostart: `~/Library/LaunchAgents/ch.mino.pib-chrome.plist` runs `pib-chrome start` at login.
+
+`test/run.sh` passes all 123 checks on macOS 26 (arm64) with Chrome 157.
+
 ## Limits
 
 - Chromium only, and only an already-running browser.

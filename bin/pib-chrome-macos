@@ -1,0 +1,292 @@
+#!/bin/bash
+# pib-chrome-macos - lifecycle of the agent's own Chrome, macOS edition.
+# `pib-chrome` hands over to this on Darwin; same commands, same env vars.
+#
+# A second Chrome, separate from mino's daily browser, with its own profile,
+# exposing CDP on loopback. There is no headless compositor like cage on
+# macOS, so "background" means: launched hidden (`open -g -j`), never
+# activated, with occluded-window throttling turned off so hidden tabs still
+# render (screenshots, lazy pages). It is still ordinary headful Chrome:
+# real UA, real GPU, a real pointer.
+#
+# `update` installs Google's signed universal build privately under
+# $PIB_HOME/chrome/<version>, after checking its code signature belongs to
+# Google (Team ID EQHXZ8M8AV) and passes Gatekeeper.
+#
+# Flags stay minimal. Never add --enable-automation, --headless, --no-sandbox
+# or --disable-blink-features: they are what make a browser look automated.
+#
+# Written for /bin/bash 3.2 (no mapfile, no setsid).
+
+set -uo pipefail
+
+PORT="${PIB_PORT:-9222}"
+STATE="${PIB_HOME:-$HOME/.local/share/pib}"
+PROFILE="${PIB_PROFILE:-$STATE/chrome-profile}"
+SIZE="${PIB_SIZE:-1920x1080}"
+LOG="$STATE/chrome.log"
+MODE_FILE="$STATE/mode"
+CHROME_PID="$STATE/chrome.pid"
+CHROME_DIR="$STATE/chrome"
+GOOGLE_TEAM_ID="EQHXZ8M8AV"
+DMG_URL="https://dl.google.com/chrome/mac/universal/stable/GGRO/googlechrome.dmg"
+
+chrome_app() {
+  if [ -n "${PIB_CHROME_BIN:-}" ]; then
+    # Accept either the .app or the binary inside it.
+    case "$PIB_CHROME_BIN" in
+      *.app) echo "$PIB_CHROME_BIN" ;;
+      *) echo "${PIB_CHROME_BIN%/Contents/MacOS/*}" ;;
+    esac
+  elif [ -d "$CHROME_DIR/current/Google Chrome.app" ]; then echo "$CHROME_DIR/current/Google Chrome.app"
+  else echo "/Applications/Google Chrome.app"
+  fi
+}
+chrome_version() { defaults read "$1/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null; }
+
+usage() {
+  cat <<'EOF'
+usage: pib-chrome <command>        (macOS)
+
+  start [--visible]   launch (default: hidden, never takes focus)
+  stop                shut down the browser this script started
+  restart             stop, then start hidden
+  status              mode, version, update state, open tabs
+  login <url>         show the browser and open <url> for a manual sign-in
+  background          back to hidden (run after signing in)
+  update [--check]    install the current stable Chrome privately (verified)
+  profile             print the profile path
+
+env: PIB_PORT PIB_PROFILE PIB_HOME PIB_SIZE PIB_CHROME_BIN
+EOF
+}
+
+alive() { curl -sf --max-time 2 "http://127.0.0.1:$PORT/json/version" >/dev/null 2>&1; }
+mode() { cat "$MODE_FILE" 2>/dev/null || echo unknown; }
+# A pidfile is only believed if that pid is still the Chrome on our profile.
+pid_of() {
+  local p
+  p="$(cat "$CHROME_PID" 2>/dev/null)" && [ -n "$p" ] && kill -0 "$p" 2>/dev/null || return 1
+  ps -p "$p" -o command= 2>/dev/null | grep -qF -- "--user-data-dir=$PROFILE" && echo "$p"
+}
+ours() { local p; p="$(pid_of)" && [ -n "$p" ]; }
+port_owner() { lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null | head -1; }
+
+wait_up() {
+  local i
+  for i in $(seq 1 80); do
+    sleep 0.25
+    alive && return 0
+  done
+  return 1
+}
+
+do_start() {
+  local visible=0 app
+  [ "${1:-}" = "--visible" ] && visible=1
+  app="$(chrome_app)"
+
+  if alive; then
+    if ours; then echo "pib-chrome: already running ($(mode) mode) on 127.0.0.1:$PORT"
+    else echo "pib-chrome: port $PORT is already served by another browser (pid $(port_owner), not started by pib-chrome); leaving it alone"
+    fi
+    return 0
+  fi
+  [ -d "$app" ] || { echo "pib-chrome: no Chrome at $app (run: pib-chrome update)" >&2; return 1; }
+  mkdir -p "$PROFILE" "$STATE"
+
+  local w="${SIZE%x*}" h="${SIZE#*x}"
+  local args=(
+    "--user-data-dir=$PROFILE"
+    "--remote-debugging-port=$PORT"
+    "--remote-debugging-address=127.0.0.1"
+    "--no-first-run"
+    "--no-default-browser-check"
+    "--window-size=$w,$h"
+    # Hidden windows count as occluded on macOS, and occluded tabs stop
+    # rendering: screenshots stall, lazy content never loads.
+    "--disable-backgrounding-occluded-windows"
+  )
+  # -n: always a new instance (never hand the flags to some other Chrome);
+  # -g: do not bring it forward; -j: launch hidden.
+  local how=(-n -g -j)
+  [ "$visible" = 1 ] && how=(-n)
+  open "${how[@]}" -a "$app" --stdout "$LOG" --stderr "$LOG" --args "${args[@]}" \
+    || { echo "pib-chrome: could not launch $app" >&2; return 1; }
+  [ "$visible" = 1 ] && echo visible >"$MODE_FILE" || echo background >"$MODE_FILE"
+
+  if ! wait_up; then
+    echo "pib-chrome: did not come up within 20s; see $LOG" >&2
+    return 1
+  fi
+  port_owner >"$CHROME_PID"
+  echo "pib-chrome: up on 127.0.0.1:$PORT ($(mode) mode, Chrome $(chrome_version "$app"))"
+}
+
+do_stop() {
+  local chrome i
+  chrome="$(pid_of)"
+  if [ -z "$chrome" ]; then
+    if alive; then
+      echo "pib-chrome: the browser on port $PORT was not started by pib-chrome (pid $(port_owner)); not touching it" >&2
+      return 1
+    fi
+    echo "pib-chrome: not running"
+    rm -f "$MODE_FILE" "$CHROME_PID"
+    return 0
+  fi
+  kill "$chrome" 2>/dev/null
+  for i in $(seq 1 40); do
+    sleep 0.25
+    [ -z "$(pid_of)" ] && break
+  done
+  chrome="$(pid_of)"
+  [ -n "$chrome" ] && kill -9 "$chrome" 2>/dev/null
+  rm -f "$MODE_FILE" "$CHROME_PID"
+  echo "pib-chrome: stopped"
+}
+
+latest_version() {
+  curl -fsS --max-time 8 "https://versionhistory.googleapis.com/v1/chrome/platforms/mac_arm64/channels/stable/versions?pageSize=1" 2>/dev/null \
+    | sed -n 's/.*"version": *"\([0-9.]*\)".*/\1/p' | head -1
+}
+
+do_status() {
+  if ! alive; then
+    echo "pib-chrome: DOWN (port $PORT)"
+    return 1
+  fi
+  local running latest
+  running="$(curl -s --max-time 3 "http://127.0.0.1:$PORT/json/version" | sed -n 's/.*"Browser": "[^/]*\/\([^"]*\)".*/\1/p')"
+  if ours; then echo "pib-chrome: UP on 127.0.0.1:$PORT  [$(mode) mode]"
+  else echo "pib-chrome: a browser is UP on 127.0.0.1:$PORT, but it was not started by pib-chrome (pid $(port_owner))"
+  fi
+  echo "  chrome:  $running"
+  latest="$(latest_version)"
+  # Google's version list runs ahead of the .dmg during a staged rollout,
+  # so one major version behind is normal for a few days.
+  if [ -n "$latest" ] && [ $(( ${latest%%.*} - ${running%%.*} )) -ge 2 ]; then
+    echo "  WARNING: current stable is $latest ($(( ${latest%%.*} - ${running%%.*} )) major versions newer). Run: pib-chrome update && pib-chrome restart"
+  elif [ -n "$latest" ] && [ "$running" != "$latest" ]; then
+    echo "  update:  $latest is available (pib-chrome update)"
+  fi
+  echo "  profile: $PROFILE"
+  echo "  tabs:"
+  curl -s --max-time 3 "http://127.0.0.1:$PORT/json/list" | python3 -c '
+import sys, json
+try:
+    pages = [t for t in json.load(sys.stdin) if t["type"] == "page"]
+except Exception:
+    pages = []
+if not pages:
+    print("    (none)")
+for t in pages:
+    print("    %-8s %-40s %s" % (t["id"][:8], (t.get("title") or "")[:40], t["url"][:60]))
+'
+}
+
+# macOS can show a hidden app without restarting it, so a sign-in keeps
+# every agent tab open (unlike Linux, where cage has to go).
+do_login() {
+  local url="${1:-}"
+  [ -n "$url" ] || { echo "usage: pib-chrome login <url>" >&2; return 1; }
+  if alive && ! ours; then
+    echo "pib-chrome: the browser on port $PORT is not pib-chrome's; not touching it" >&2
+    return 1
+  fi
+  alive || do_start --visible || return 1
+  # A new window in this browser, then bring this exact app to the front
+  # (by its path, so LaunchServices cannot pick some other Chrome).
+  curl -sf --max-time 5 -X PUT "http://127.0.0.1:$PORT/json/new?$url" >/dev/null \
+    || { echo "pib-chrome: could not open $url" >&2; return 1; }
+  open -a "$(chrome_app)"
+  echo visible >"$MODE_FILE"
+  echo "pib-chrome: opened $url - sign in there, then run: pib-chrome background"
+}
+
+do_background() {
+  if ! alive; then do_start; return; fi
+  ours || { echo "pib-chrome: the browser on port $PORT is not pib-chrome's; not touching it" >&2; return 1; }
+  # Hide it again (Cmd-H equivalent) instead of restarting: tabs and
+  # session-only logins survive. Needs permission to control System Events
+  # once; if that is refused, fall back to a restart.
+  if osascript -e "tell application \"System Events\" to set visible of (first process whose unix id is $(pid_of)) to false" >/dev/null 2>&1; then
+    echo background >"$MODE_FILE"
+    echo "pib-chrome: hidden (background mode)"
+  else
+    echo "pib-chrome: could not hide the window (System Events permission?); restarting hidden" >&2
+    do_stop && sleep 1 && do_start
+  fi
+}
+
+do_update() {
+  local check=0 latest have tmp mnt app ver
+  [ "${1:-}" = "--check" ] && check=1
+  have="$(readlink "$CHROME_DIR/current" 2>/dev/null)"
+  latest="$(latest_version)"
+  if [ -n "$latest" ] && [ "$have" = "$latest" ] && [ -d "$CHROME_DIR/$have/Google Chrome.app" ]; then
+    echo "pib-chrome: private Chrome is current ($have)"
+    return 0
+  fi
+  if [ "$check" = 1 ]; then
+    echo "pib-chrome: Chrome ${latest:-?} is available (installed privately: ${have:-none}; using: $(chrome_app))"
+    return 0
+  fi
+
+  tmp="$(mktemp -d)" || return 1
+  trap 'hdiutil detach -quiet "$tmp/mnt" 2>/dev/null; rm -rf "$tmp"' RETURN
+  echo "pib-chrome: downloading Chrome ..."
+  local progress=-s
+  [ -t 2 ] && progress=--progress-bar
+  curl -fS "$progress" --max-time 900 "$DMG_URL" -o "$tmp/chrome.dmg" || { echo "pib-chrome: download failed" >&2; return 1; }
+  mkdir "$tmp/mnt"
+  hdiutil attach -quiet -nobrowse -readonly -mountpoint "$tmp/mnt" "$tmp/chrome.dmg" \
+    || { echo "pib-chrome: could not open the disk image" >&2; return 1; }
+  [ -d "$tmp/mnt/Google Chrome.app" ] || { echo "pib-chrome: no Google Chrome.app in the image" >&2; return 1; }
+  # Verify the copy that will actually run. The mounted image carries Finder
+  # metadata that makes a --strict check fail, so copy out and strip it first.
+  ditto "$tmp/mnt/Google Chrome.app" "$tmp/stage/Google Chrome.app" || return 1
+  hdiutil detach -quiet "$tmp/mnt"
+  xattr -cr "$tmp/stage/Google Chrome.app"
+  app="$tmp/stage/Google Chrome.app"
+
+  # The signature must be intact, Google's, and accepted by Gatekeeper
+  # (which also checks notarization).
+  codesign --verify --deep --strict "$app" 2>/dev/null \
+    || { echo "pib-chrome: the code signature does not verify; refusing" >&2; return 1; }
+  # Captured first: under pipefail, grep -q closing the pipe early fails the pipeline.
+  local sig; sig="$(codesign -dv "$app" 2>&1)"
+  grep -qx "TeamIdentifier=$GOOGLE_TEAM_ID" <<<"$sig" \
+    || { echo "pib-chrome: not signed by Google (Team ID $GOOGLE_TEAM_ID); refusing" >&2; return 1; }
+  spctl --assess --type execute "$app" 2>/dev/null \
+    || { echo "pib-chrome: Gatekeeper rejects it; refusing" >&2; return 1; }
+
+  ver="$(chrome_version "$app")"
+  [ -n "$ver" ] || { echo "pib-chrome: could not read the version" >&2; return 1; }
+  if [ "$ver" = "$have" ] && [ -d "$CHROME_DIR/$ver/Google Chrome.app" ]; then
+    echo "pib-chrome: private Chrome is current ($ver)"
+    return 0
+  fi
+  mkdir -p "$CHROME_DIR/$ver"
+  rm -rf "$CHROME_DIR/$ver/Google Chrome.app"
+  ditto "$app" "$CHROME_DIR/$ver/Google Chrome.app" || return 1
+  ln -sfn "$ver" "$CHROME_DIR/current"
+  # Keep the new one and the one before it.
+  ls -1 "$CHROME_DIR" | grep -E '^[0-9.]+$' | grep -vx -e "$ver" -e "${have:-none}" | while read -r old; do rm -rf "${CHROME_DIR:?}/$old"; done
+  echo "pib-chrome: installed Chrome $ver in $CHROME_DIR/$ver"
+  alive && ours && echo "pib-chrome: the running browser is still the old one; pib-chrome restart to switch"
+  return 0
+}
+
+case "${1:-}" in
+  start)      shift; do_start "$@" ;;
+  stop)       do_stop ;;
+  restart)    do_stop && sleep 1 && do_start ;;
+  status)     do_status ;;
+  login)      shift; do_login "$@" ;;
+  background) do_background ;;
+  update)     shift; do_update "$@" ;;
+  profile)    echo "$PROFILE" ;;
+  ""|-h|--help|help) usage ;;
+  *) echo "pib-chrome: unknown command '$1'" >&2; usage; exit 1 ;;
+esac

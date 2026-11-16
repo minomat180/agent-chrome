@@ -23,6 +23,9 @@
 
 set -uo pipefail
 
+# No cage, /proc or apt on macOS: a separate implementation, same commands.
+[ "$(uname -s)" = Darwin ] && exec "$(dirname "$(readlink -f "$0")")/pib-chrome-macos" "$@"
+
 PORT="${PIB_PORT:-9222}"
 STATE="${PIB_HOME:-$HOME/.local/share/pib}"
 PROFILE="${PIB_PROFILE:-$HOME/.local/share/pi-browser/chrome-profile}"

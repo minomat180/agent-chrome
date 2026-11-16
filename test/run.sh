@@ -194,7 +194,12 @@ has "browser down is explained" "pib-chrome start" env PIB_PORT=9 pib status
 pib -q open $F/index.html >/dev/null
 has "has a mouse (hover: hover)"  "true"  pib eval 'matchMedia("(hover: hover)").matches && matchMedia("(pointer: fine)").matches'
 has "webdriver flag is off"       "false" pib eval --main 'String(navigator.webdriver)'
-has "1080p viewport"              "1920"  pib eval 'innerWidth'
+if [ "$(uname -s)" = Darwin ]; then
+  # macOS clamps the window to the screen, so 1920 only on a big enough display.
+  has "wide viewport"               "true"  pib eval 'innerWidth >= Math.min(1920, screen.availWidth) - 16'
+else
+  has "1080p viewport"              "1920"  pib eval 'innerWidth'
+fi
 
 echo
 echo "passed $pass, failed $fail"
