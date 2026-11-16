@@ -118,6 +118,10 @@ vault_use(name="EXAMPLE_PASSWORD", reason="Sign in to example.com",
   command=["sh","-c","printf '%s' \"$PI_VAULT_SECRET\" | PIB_SESSION=<key> pib secret '#password'"])
 ```
 
+On macOS the logins are vault entries named `pw.*` (`vault_list`).
+`~/.local/state/pi-vault/logins.tsv` maps each name to its URL and username
+(no passwords in it), so look the username up there for `pib fill`.
+
 (On the Linux machine the web logins are in the iPod vault: `ipod_vault_use`
 with `label=` instead of `name=`, same command.)
 
