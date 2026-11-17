@@ -118,10 +118,14 @@ Google's signature on the apt `Release` file and the hash chain down to the
 
 - `pib-chrome update` installs Google's universal Chrome into `~/.local/share/pib/chrome/<version>`,
   after checking the code signature (Google, Team ID `EQHXZ8M8AV`) and Gatekeeper/notarization.
-- No cage: background mode is Chrome launched hidden (`open -n -g -j`), so it never takes focus,
-  with `--disable-backgrounding-occluded-windows` so hidden tabs still render.
-- `login` shows the running browser and `background` hides it again (Cmd-H via System Events,
-  asks for that permission once). Neither restarts it, so tabs and session cookies survive.
+- No cage: background mode is Chrome launched hidden with no window (`open -n -g -j`,
+  `--no-startup-window`), then given one window over CDP, minimised. pib keeps it minimised and
+  never calls `Page.bringToFront` there; focus emulation keeps background tabs rendering.
+- `login` un-minimises the running browser and `background` minimises it again, both over CDP
+  (no System Events permission). Neither restarts it, so tabs and session cookies survive.
+- `lib/unload-guard.mjs` runs alongside the browser and accepts "Leave site?" (beforeunload)
+  dialogs. Without it, an agent tab left on a form stops logout, restart and shut down with a
+  dialog nobody can see in the minimised window. Started by `pib-chrome start`, exits with Chrome.
 - Profile: `~/.local/share/pib/chrome-profile`. Window size is clamped to the screen.
 - `ctrl+a`/`meta+a` (and c, x, v, z) are sent as Cmd plus the editor command, since a synthetic
   key event on macOS does not edit by itself and Ctrl+A there means "start of line".

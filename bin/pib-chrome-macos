@@ -29,6 +29,7 @@ SIZE="${PIB_SIZE:-1920x1080}"
 LOG="$STATE/chrome.log"
 MODE_FILE="$STATE/mode"
 CHROME_PID="$STATE/chrome.pid"
+GUARD_PID="$STATE/unload-guard.pid"
 CHROME_DIR="$STATE/chrome"
 GOOGLE_TEAM_ID="EQHXZ8M8AV"
 DMG_URL="https://dl.google.com/chrome/mac/universal/stable/GGRO/googlechrome.dmg"
@@ -67,6 +68,36 @@ HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 # Minimise every window of the browser, or bring them back (lib/windows.mjs).
 windows() { node "$HERE/../lib/windows.mjs" "$PORT" "$@"; }
 
+# Accepts "Leave site?" dialogs, which would otherwise hold up logout and
+# shut down from inside a minimised window (lib/unload-guard.mjs). Started
+# with the browser, exits with it; every command here makes sure it runs.
+guard_pid() {
+  local p
+  p="$(cat "$GUARD_PID" 2>/dev/null)" && [ -n "$p" ] && kill -0 "$p" 2>/dev/null || return 1
+  ps -p "$p" -o command= 2>/dev/null | grep -qF -- "unload-guard.mjs $PORT" && echo "$p"
+}
+ensure_guard() {
+  guard_pid >/dev/null && return 0
+  # In a session of its own (no setsid(1) on macOS), so that whatever ran
+  # this command cannot take it down when it cleans up its process group.
+  # Forked first: a job-control shell makes `&` children group leaders, and
+  # a group leader may not call setsid.
+  python3 -c '
+import os, sys
+pid = os.fork()
+if pid:
+    open(sys.argv[1], "w").write("%d\n" % pid)
+    sys.exit(0)
+os.setsid()
+os.execvp(sys.argv[2], sys.argv[2:])
+' "$GUARD_PID" node "$HERE/../lib/unload-guard.mjs" "$PORT" </dev/null >>"$LOG" 2>&1
+}
+stop_guard() {
+  local p
+  p="$(guard_pid)" && kill "$p" 2>/dev/null
+  rm -f "$GUARD_PID"
+}
+
 alive() { curl -sf --max-time 2 "http://127.0.0.1:$PORT/json/version" >/dev/null 2>&1; }
 mode() { cat "$MODE_FILE" 2>/dev/null || echo unknown; }
 # A pidfile is only believed if that pid is still the Chrome on our profile.
@@ -93,7 +124,9 @@ do_start() {
   app="$(chrome_app)"
 
   if alive; then
-    if ours; then echo "pib-chrome: already running ($(mode) mode) on 127.0.0.1:$PORT"
+    if ours; then
+      ensure_guard
+      echo "pib-chrome: already running ($(mode) mode) on 127.0.0.1:$PORT"
     else echo "pib-chrome: port $PORT is already served by another browser (pid $(port_owner), not started by pib-chrome); leaving it alone"
     fi
     return 0
@@ -129,6 +162,7 @@ do_start() {
     return 1
   fi
   port_owner >"$CHROME_PID"
+  ensure_guard
   if [ "$visible" = 0 ]; then
     windows minimized --create || echo "pib-chrome: could not make a minimised window" >&2
   fi
@@ -144,6 +178,7 @@ do_stop() {
       return 1
     fi
     echo "pib-chrome: not running"
+    stop_guard
     rm -f "$MODE_FILE" "$CHROME_PID"
     return 0
   fi
@@ -154,6 +189,7 @@ do_stop() {
   done
   chrome="$(pid_of)"
   [ -n "$chrome" ] && kill -9 "$chrome" 2>/dev/null
+  stop_guard
   rm -f "$MODE_FILE" "$CHROME_PID"
   echo "pib-chrome: stopped"
 }
@@ -170,7 +206,9 @@ do_status() {
   fi
   local running latest
   running="$(curl -s --max-time 3 "http://127.0.0.1:$PORT/json/version" | sed -n 's/.*"Browser": "[^/]*\/\([^"]*\)".*/\1/p')"
-  if ours; then echo "pib-chrome: UP on 127.0.0.1:$PORT  [$(mode) mode]"
+  if ours; then
+    echo "pib-chrome: UP on 127.0.0.1:$PORT  [$(mode) mode]"
+    guard_pid >/dev/null || echo "  WARNING: the unload guard is not running, so a \"Leave site?\" dialog can block logout (any pib-chrome command restarts it)"
   else echo "pib-chrome: a browser is UP on 127.0.0.1:$PORT, but it was not started by pib-chrome (pid $(port_owner))"
   fi
   echo "  chrome:  $running"
@@ -207,6 +245,7 @@ do_login() {
     return 1
   fi
   alive || do_start --visible || return 1
+  ensure_guard
   # Visible from here on, said first: pib minimises the window again on its
   # next command for as long as the mode says background.
   echo visible >"$MODE_FILE"
@@ -222,6 +261,7 @@ do_login() {
 do_background() {
   if ! alive; then do_start; return; fi
   ours || { echo "pib-chrome: the browser on port $PORT is not pib-chrome's; not touching it" >&2; return 1; }
+  ensure_guard
   # Minimise its windows instead of restarting: tabs and session-only logins
   # survive. Over CDP, so no System Events permission is involved.
   if windows minimized; then
