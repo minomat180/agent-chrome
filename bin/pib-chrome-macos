@@ -22,6 +22,12 @@
 
 set -uo pipefail
 
+# launchd (the login autostart) runs this with PATH=/usr/bin:/bin:/usr/sbin:/sbin,
+# where there is no node: then the unload guard and the minimised window
+# silently never happened, and "Leave site?" could stall restart and shut down.
+export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.nix-profile/bin"
+NODE="${PIB_NODE:-$(command -v node)}"
+
 PORT="${PIB_PORT:-9222}"
 STATE="${PIB_HOME:-$HOME/.local/share/pib}"
 PROFILE="${PIB_PROFILE:-$STATE/chrome-profile}"
@@ -60,13 +66,13 @@ usage: pib-chrome <command>        (macOS)
   update [--check]    install the current stable Chrome privately (verified)
   profile             print the profile path
 
-env: PIB_PORT PIB_PROFILE PIB_HOME PIB_SIZE PIB_CHROME_BIN
+env: PIB_PORT PIB_PROFILE PIB_HOME PIB_SIZE PIB_CHROME_BIN PIB_NODE
 EOF
 }
 
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 # Minimise every window of the browser, or bring them back (lib/windows.mjs).
-windows() { node "$HERE/../lib/windows.mjs" "$PORT" "$@"; }
+windows() { "$NODE" "$HERE/../lib/windows.mjs" "$PORT" "$@"; }
 
 # Accepts "Leave site?" dialogs, which would otherwise hold up logout and
 # shut down from inside a minimised window (lib/unload-guard.mjs). Started
@@ -78,6 +84,7 @@ guard_pid() {
 }
 ensure_guard() {
   guard_pid >/dev/null && return 0
+  [ -x "$NODE" ] || { echo "pib-chrome: node not found (set PIB_NODE); the unload guard cannot run" >&2; return 1; }
   # In a session of its own (no setsid(1) on macOS), so that whatever ran
   # this command cannot take it down when it cleans up its process group.
   # Forked first: a job-control shell makes `&` children group leaders, and
@@ -90,7 +97,10 @@ if pid:
     sys.exit(0)
 os.setsid()
 os.execvp(sys.argv[2], sys.argv[2:])
-' "$GUARD_PID" node "$HERE/../lib/unload-guard.mjs" "$PORT" </dev/null >>"$LOG" 2>&1
+' "$GUARD_PID" "$NODE" "$HERE/../lib/unload-guard.mjs" "$PORT" </dev/null >>"$LOG" 2>&1
+  # The pidfile is written before node starts; only a guard that stays up counts.
+  sleep 0.5
+  guard_pid >/dev/null || { echo "pib-chrome: the unload guard did not start; see $LOG" >&2; return 1; }
 }
 stop_guard() {
   local p
