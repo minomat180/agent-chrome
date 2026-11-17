@@ -111,6 +111,13 @@ setup_headless_seat() {
   local chrome display
   chrome="$(pid_of "$CHROME_PID")" || return 0
   display="$(tr '\0' '\n' <"/proc/$chrome/environ" 2>/dev/null | sed -n 's/^WAYLAND_DISPLAY=//p')"
+  # Chrome may write its process title over its environment (seen with
+  # Chromium 157), so ask cage which wayland socket it listens on instead.
+  if [ -z "$display" ]; then
+    local cage
+    cage="$(pid_of "$CAGE_PID")" \
+      && display="$(ss -xlpn 2>/dev/null | grep -F "pid=$cage," | grep -o '/wayland-[0-9]*' | head -1 | tr -d /)"
+  fi
   [ -n "$display" ] || { echo "pib-chrome: could not find the compositor socket; no pointer device, default size" >&2; return 0; }
   if command -v wlr-randr >/dev/null; then
     WAYLAND_DISPLAY="$display" wlr-randr --output HEADLESS-1 --custom-mode "$SIZE" >>"$LOG" 2>&1 \
