@@ -49,6 +49,7 @@ const HELP = `pib - drive the agent's logged-in Chrome (one tab per session, ref
 // ---------------------------------------------------------------------------
 // small helpers
 
+const MAC = process.platform === "darwin";
 const clip = (s, n) => (s.length > n ? `${s.slice(0, n)}\n… (${s.length - n} more chars; raise --max)` : s);
 const short = (id) => id.slice(0, 8);
 
@@ -137,9 +138,11 @@ class Ctx {
   async newTab() {
     // One shared window: new tabs go into the existing window. Only when no
     // window is open at all does Chrome refuse, and then a window is made.
+    // macOS: as a background tab. A foreground one brings Chrome forward on
+    // mino's screen (see Page.surface).
     const { targetId } = await this.cdp
-      .send("Target.createTarget", { url: "about:blank", newWindow: false, background: false })
-      .catch(() => this.cdp.send("Target.createTarget", { url: "about:blank", newWindow: true, background: false }));
+      .send("Target.createTarget", { url: "about:blank", newWindow: false, background: MAC })
+      .catch(() => this.cdp.send("Target.createTarget", { url: "about:blank", newWindow: true, background: MAC }));
     this.state.tabs.push(targetId);
     this.state.current = targetId;
     this.attached = null;
@@ -775,7 +778,7 @@ const COMMANDS = {
     // A window that is not on top renders lazily; bring it forward first or the capture can stall.
     let data;
     for (let attempt = 0; attempt < 2 && !data; attempt++) {
-      await page.send("Page.bringToFront").catch(() => {});
+      await page.surface();
       await sleep(120);
       data = await page.send("Page.captureScreenshot", params, 8000).then((r) => r.data, () => null);
     }

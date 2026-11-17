@@ -4,10 +4,12 @@
 #
 # A second Chrome, separate from mino's daily browser, with its own profile,
 # exposing CDP on loopback. There is no headless compositor like cage on
-# macOS, so "background" means: launched hidden (`open -g -j`), never
-# activated, with occluded-window throttling turned off so hidden tabs still
-# render (screenshots, lazy pages). It is still ordinary headful Chrome:
-# real UA, real GPU, a real pointer.
+# macOS, so "background" means: its windows are minimised and nothing ever
+# activates it. Launching hidden (`open -g -j`) is not enough on its own:
+# opening a tab shows a hidden app's window again, and Chrome will not park a
+# window off screen (it keeps 40px on). A minimised window stays put, and pib
+# makes its tabs render with focus emulation (lib/page.mjs, Page.surface).
+# It is still ordinary headful Chrome: real UA, real GPU, a real pointer.
 #
 # `update` installs Google's signed universal build privately under
 # $PIB_HOME/chrome/<version>, after checking its code signature belongs to
@@ -48,18 +50,22 @@ usage() {
   cat <<'EOF'
 usage: pib-chrome <command>        (macOS)
 
-  start [--visible]   launch (default: hidden, never takes focus)
+  start [--visible]   launch (default: minimised, never takes focus)
   stop                shut down the browser this script started
-  restart             stop, then start hidden
+  restart             stop, then start in the background
   status              mode, version, update state, open tabs
   login <url>         show the browser and open <url> for a manual sign-in
-  background          back to hidden (run after signing in)
+  background          minimise it again (run after signing in)
   update [--check]    install the current stable Chrome privately (verified)
   profile             print the profile path
 
 env: PIB_PORT PIB_PROFILE PIB_HOME PIB_SIZE PIB_CHROME_BIN
 EOF
 }
+
+HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+# Minimise every window of the browser, or bring them back (lib/windows.mjs).
+windows() { node "$HERE/../lib/windows.mjs" "$PORT" "$@"; }
 
 alive() { curl -sf --max-time 2 "http://127.0.0.1:$PORT/json/version" >/dev/null 2>&1; }
 mode() { cat "$MODE_FILE" 2>/dev/null || echo unknown; }
@@ -103,14 +109,17 @@ do_start() {
     "--no-first-run"
     "--no-default-browser-check"
     "--window-size=$w,$h"
-    # Hidden windows count as occluded on macOS, and occluded tabs stop
+    # Minimised windows count as occluded on macOS, and occluded tabs stop
     # rendering: screenshots stall, lazy content never loads.
     "--disable-backgrounding-occluded-windows"
   )
   # -n: always a new instance (never hand the flags to some other Chrome);
-  # -g: do not bring it forward; -j: launch hidden.
+  # -g: do not bring it forward; -j: launch hidden. That alone is not enough:
+  # Chrome shows its first window and takes the keyboard for a second or two
+  # anyway (measured). So in the background it starts with no window at all,
+  # and the window is made over CDP, already minimised, once it answers.
   local how=(-n -g -j)
-  [ "$visible" = 1 ] && how=(-n)
+  if [ "$visible" = 1 ]; then how=(-n); else args+=("--no-startup-window"); fi
   open "${how[@]}" -a "$app" --stdout "$LOG" --stderr "$LOG" --args "${args[@]}" \
     || { echo "pib-chrome: could not launch $app" >&2; return 1; }
   [ "$visible" = 1 ] && echo visible >"$MODE_FILE" || echo background >"$MODE_FILE"
@@ -120,6 +129,9 @@ do_start() {
     return 1
   fi
   port_owner >"$CHROME_PID"
+  if [ "$visible" = 0 ]; then
+    windows minimized --create || echo "pib-chrome: could not make a minimised window" >&2
+  fi
   echo "pib-chrome: up on 127.0.0.1:$PORT ($(mode) mode, Chrome $(chrome_version "$app"))"
 }
 
@@ -195,26 +207,28 @@ do_login() {
     return 1
   fi
   alive || do_start --visible || return 1
-  # A new window in this browser, then bring this exact app to the front
+  # Visible from here on, said first: pib minimises the window again on its
+  # next command for as long as the mode says background.
+  echo visible >"$MODE_FILE"
+  windows normal
+  # A new tab in this browser, then bring this exact app to the front
   # (by its path, so LaunchServices cannot pick some other Chrome).
   curl -sf --max-time 5 -X PUT "http://127.0.0.1:$PORT/json/new?$url" >/dev/null \
     || { echo "pib-chrome: could not open $url" >&2; return 1; }
   open -a "$(chrome_app)"
-  echo visible >"$MODE_FILE"
   echo "pib-chrome: opened $url - sign in there, then run: pib-chrome background"
 }
 
 do_background() {
   if ! alive; then do_start; return; fi
   ours || { echo "pib-chrome: the browser on port $PORT is not pib-chrome's; not touching it" >&2; return 1; }
-  # Hide it again (Cmd-H equivalent) instead of restarting: tabs and
-  # session-only logins survive. Needs permission to control System Events
-  # once; if that is refused, fall back to a restart.
-  if osascript -e "tell application \"System Events\" to set visible of (first process whose unix id is $(pid_of)) to false" >/dev/null 2>&1; then
+  # Minimise its windows instead of restarting: tabs and session-only logins
+  # survive. Over CDP, so no System Events permission is involved.
+  if windows minimized; then
     echo background >"$MODE_FILE"
-    echo "pib-chrome: hidden (background mode)"
+    echo "pib-chrome: minimised (background mode)"
   else
-    echo "pib-chrome: could not hide the window (System Events permission?); restarting hidden" >&2
+    echo "pib-chrome: could not minimise the window; restarting in the background" >&2
     do_stop && sleep 1 && do_start
   fi
 }
