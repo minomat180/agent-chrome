@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # pi-chrome was replaced by pib-chrome on 2026-11-12. The old script must not
 # run any more: it would start the outdated /opt Chrome on a profile that a
 # newer Chrome has already opened, and its `stop` signals by profile path.

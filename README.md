@@ -133,6 +133,24 @@ Google's signature on the apt `Release` file and the hash chain down to the
 
 `test/run.sh` passes all 123 checks on macOS 26 (arm64) with Chrome 157.
 
+## NixOS (branch `feature/nixos`)
+
+Same Linux design (headful Chrome in a headless `cage`), with what NixOS needs:
+
+- Chrome, cage and wlr-randr come from nixpkgs (`google-chrome cage wlr-randr` in
+  `environment.systemPackages`); `pib-chrome` falls back to `google-chrome-stable` /
+  `chromium` on PATH when there is no private or `/opt` Chrome. `pib-chrome update`
+  does nothing on NixOS: Chrome updates with the system (`nixos-rebuild switch --upgrade`).
+- `hardware.graphics.enable = true`, or Chrome has no GL at all (no WebGL).
+- Shebangs are `#!/usr/bin/env bash` (NixOS has no `/bin/bash`).
+- Autostart: `systemd.user.services.pib-chrome` in `/etc/nixos/configuration.nix`
+  (oneshot + RemainAfterExit, runs `pib-chrome start`/`stop`; lingering is on, so it
+  comes up at boot without a login).
+- No desktop session, so `pib-chrome login` (visible window) cannot show anything.
+  Sign in over the DevTools screencast instead: `ssh -L 9333:127.0.0.1:9222 <host>`,
+  then in a local Chrome open `chrome://inspect`, add `localhost:9333` under
+  "Discover network targets", open a tab there and "inspect" it.
+
 ## Limits
 
 - Chromium only, and only an already-running browser.

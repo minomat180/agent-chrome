@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Serve test/fixture on 127.0.0.1:8765 (loopback only). `stop` to stop it.
 # Lives in a file so the pkill pattern can never match the calling shell.
 cd "$(dirname "$0")/fixture" || exit 1

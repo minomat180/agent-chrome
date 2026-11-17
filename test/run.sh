@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # End-to-end tests: a throwaway Chrome (own profile, own port, headless cage)
 # driven through the real CLI against test/fixture.
 #
