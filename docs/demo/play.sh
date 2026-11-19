@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Plays the README demo: types each command like a person would, then runs it
 # for real against a throwaway browser (docs/demo/setup.sh). Recorded with
-#   asciinema rec --headless --window-size 96x40 -c 'bash docs/demo/play.sh' demo.cast
+#   asciinema rec --headless --window-size 124x40 -c 'bash docs/demo/play.sh' demo.cast
 #   agg --font-size 18 --theme monokai --idle-time-limit 4 demo.cast docs/demo/demo.gif
 # Needs jq and network access to httpbin.org.
 cd "$(dirname "$0")/../.." || exit 1
 source docs/demo/setup.sh
+trap 'agent-chrome close >/dev/null 2>&1; agent-chrome-ctl stop >/dev/null' EXIT
 clear
 
 n=0
@@ -25,4 +26,3 @@ say 'agent-chrome check e10'
 say 'agent-chrome fill e11 19:30'
 say 'agent-chrome click "text=Submit order"' 2.5
 say 'agent-chrome text | jq -c .form' 4
-agent-chrome close >/dev/null

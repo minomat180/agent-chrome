@@ -6,13 +6,17 @@ not in a public issue.
 
 What is at stake: agent-chrome drives a browser that is signed in to real
 accounts, and anything that can reach its DevTools port can act as those
-accounts. The design limits that exposure as follows:
+accounts. The design limits that exposure:
 
 - Chrome listens on `127.0.0.1` only (`--remote-debugging-address=127.0.0.1`).
-  Any local process running as the same user can still use the port; there is
-  no authentication on CDP.
-- `agent-chrome secret` reads the value from stdin and masks that field in all
-  later output, so the agent never sees the password it types.
+  CDP has no authentication: any process on the same machine, under any user
+  account, can connect to the port and act as the signed-in accounts. Run it
+  only on a machine you alone use.
+- `agent-chrome secret` reads the value from stdin, so it never appears in the
+  command line or the agent's transcript, and masks that field in later
+  snapshots, change reports and `get value`. It is not a sandbox: `eval` and
+  `cdp` can still read any field, and `text <target>` shows the value of a
+  field that is not `type=password`.
 - `agent-chrome-ctl update` installs Chrome only after verifying Google's
   signature (apt `Release` file and hash chain on Linux, code signature and
   Gatekeeper on macOS).

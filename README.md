@@ -12,8 +12,7 @@ changed, so the agent rarely needs another snapshot or a screenshot. Recorded
 with [docs/demo/play.sh](docs/demo/play.sh) against a throwaway browser;
 httpbin.org echoes the submitted form back.
 
-I use it every day: my Claude Code sessions on a NixOS server and on a Mac use
-it to read dashboards, create tokens and check CI in accounts I am signed in to.
+I use it daily from Claude Code on a NixOS server and a Mac.
 
 ## Why I wrote it
 
@@ -32,7 +31,7 @@ the session logs on 2026-11-12 before replacing it:
   [bot-detector.rebrowser.net](https://bot-detector.rebrowser.net/), in the
   same Chrome:
 
-| driver | red | yellow |
+| driver | failed checks (red) | warnings (yellow) |
 |---|---|---|
 | playwright-cli 0.1.24 | 3 (sourceUrl leak, main world, Runtime.enable) | 1 |
 | chrome-devtools-mcp CLI 1.13.0 | 3 (same three) | 1 |
@@ -42,12 +41,13 @@ the session logs on 2026-11-12 before replacing it:
 
 The yellow came from the browser, not the driver: Chrome inside a headless
 compositor has no pointer device and reports `(hover: none)`. `agent-chrome-ctl`
-now adds a virtual one. How to reproduce the table:
+adds a virtual pointer device on Linux. How to reproduce the table:
 [test/compare/README.md](test/compare/README.md).
 
-None of the existing drivers avoided `Runtime.enable`, the most common CDP
+None of the existing drivers avoided `Runtime.enable`, the best-known CDP
 automation signal. browser-harness came closest, but it sends each script's
-source and the tail of its output to PostHog unless `BH_TELEMETRY=0` is set,
+source and the tail of its output to PostHog (version 0.1.13) unless
+`BH_TELEMETRY=0` is set,
 which I did not want next to signed-in accounts. So I wrote a small driver and
 kept their good ideas: accessibility-tree refs that re-resolve when used, and
 input dispatched at the compositor level.
@@ -55,8 +55,9 @@ input dispatched at the compositor level.
 ## Running it
 
 Needs Node 22 or newer, bash, python3 and curl. On Linux also
-[cage](https://github.com/cage-kiosk/cage) and `wlr-randr`, plus gpg and `ar`
-for `agent-chrome-ctl update`; on macOS nothing else. There are no npm dependencies and no build step.
+[cage](https://github.com/cage-kiosk/cage) and `wlr-randr`, plus gpg, `ar`, tar and
+sha256sum for `agent-chrome-ctl update`; on macOS nothing else. There are no npm dependencies and no build step. If no Chrome is installed
+yet, run `agent-chrome-ctl update` before `start`.
 
 ```sh
 git clone https://github.com/minomat180/agent-chrome && cd agent-chrome
@@ -68,7 +69,6 @@ agent-chrome click "text=Learn more"
 agent-chrome close                # closes this session's tabs
 ```
 
-If no Chrome is installed yet, run `agent-chrome-ctl update` first.
 `agent-chrome help` lists every command. To sign the browser in to something,
 `agent-chrome-ctl login <url>` shows it on screen and `agent-chrome-ctl background`
 hides it again.
@@ -79,13 +79,16 @@ is the copy my own agents load, so it refers to my setup (a `vault` skill for
 passwords, my standing rules for the browser).
 
 Environment: `AGENT_CHROME_PORT` (9222), `AGENT_CHROME_HOME`
-(`~/.local/share/agent-chrome`), `AGENT_CHROME_PROFILE`, `AGENT_CHROME_SIZE`
-(1920x1080), `AGENT_CHROME_BIN`, `AGENT_CHROME_SESSION`.
+(`~/.local/share/agent-chrome`), `AGENT_CHROME_PROFILE`
+(`$AGENT_CHROME_HOME/chrome-profile`), `AGENT_CHROME_SIZE` (1920x1080),
+`AGENT_CHROME_BIN`, `AGENT_CHROME_STATE_DIR` (`$XDG_RUNTIME_DIR/agent-chrome`),
+`AGENT_CHROME_SESSION` (else `CLAUDE_CODE_SESSION_ID`, else `default`), and on
+macOS `AGENT_CHROME_NODE`.
 
 ### Linux
 
-Chrome runs headful inside a headless `cage` compositor: a real GPU and a real
-user agent, but no window on anyone's screen. `agent-chrome-ctl update` installs
+Chrome runs headful inside a headless `cage` compositor: hardware GL where the
+machine has a GPU and a normal user agent, but no window on anyone's screen. `agent-chrome-ctl update` installs
 the current stable Chrome into `~/.local/share/agent-chrome/chrome/<version>`
 after checking Google's signature on the apt `Release` file and the hash chain
 down to the `.deb`; `status` warns when the running Chrome is a major version
@@ -93,11 +96,13 @@ behind.
 
 On NixOS, Google's prebuilt binary does not run unpatched, so `agent-chrome-ctl`
 uses `google-chrome-stable` from nixpkgs and `update` defers to
-`nixos-rebuild`. What my server runs:
+`nixos-rebuild`. What my server runs, with `bin/*` linked into `~/.local/bin`
+(the scripts resolve symlinks to find `lib/` and `libexec/`):
 
 ```nix
 environment.systemPackages = with pkgs; [ google-chrome cage wlr-randr ];  # google-chrome is unfree
 hardware.graphics.enable = true;   # without it Chrome has no GL at all
+users.users.<you>.linger = true;    # start the user service at boot
 systemd.user.services.agent-chrome = {
   wantedBy = [ "default.target" ];
   path = [ "/run/current-system/sw" "/run/wrappers" ];
@@ -110,8 +115,7 @@ systemd.user.services.agent-chrome = {
 };
 ```
 
-With lingering enabled for the user, it starts at boot. A headless server has
-no screen for `login`; sign in through an SSH tunnel to port 9222 and
+A headless server has no screen for `login`; sign in through an SSH tunnel to port 9222 and
 `chrome://inspect` in a local Chrome instead.
 
 ### macOS
@@ -137,7 +141,8 @@ I start it at login with a LaunchAgent that runs `agent-chrome-ctl start`.
 - **A tab per agent session**, keyed by `AGENT_CHROME_SESSION` or Claude Code's
   `CLAUDE_CODE_SESSION_ID`, all in one shared window. A background tab does not
   render, so each call brings its own tab to the front first. `agent-chrome tabs`
-  shows who owns what; `agent-chrome gc` closes tabs of sessions idle for 6 h.
+  shows who owns what; `agent-chrome gc` closes tabs of sessions idle for 6 h
+  (`--older N` to change that).
 - **`Runtime.enable` is never sent.** [lib/cdp.mjs](lib/cdp.mjs) refuses it.
   Reads run in an isolated world (`Page.createIsolatedWorld`) that page scripts
   cannot see; `eval --main` opts into the page's own world.
@@ -145,14 +150,15 @@ I start it at login with a LaunchAgent that runs `agent-chrome-ctl start`.
   (`event.isTrusted === true`) aimed at hit-tested coordinates, so they work
   through open and closed shadow DOM and cross-site iframes. A click on an
   element covered by a modal reports what covers it.
-- **Refs are `backendNodeId`s.** `e12` stays valid while that node exists and is
-  refused once the document is replaced.
+- **Refs map to DOM `backendNodeId`s.** `e12` stays valid while that node
+  exists and is refused once the document is replaced.
 - **Every action reports its effect:** changed and new elements, new text, URL
   changes, answered dialogs. `alert` is accepted; `confirm` and `prompt` are
   dismissed unless the command repeats with `--accept`.
-- **Secrets** go in through `agent-chrome secret <target>` on stdin, are typed key
-  by key, and that field is masked in every later report, so a password piped
-  from a password manager never appears in the agent's context.
+- **Secrets** go in through `agent-chrome secret <target>` on stdin and are typed
+  key by key. The field is masked in later snapshots, change reports and
+  `get value`, so a password piped from a password manager does not land in the
+  agent's context by accident. `eval` can still read it.
 
 `agent-chrome-ctl` signals only processes it started (pidfiles, checked against
 the live process, and a private process name), and never adds
@@ -178,15 +184,15 @@ concurrent sessions, and the pointer, `webdriver` and viewport checks. It passes
   console capture needs `Runtime.enable`. `agent-chrome eval` and
   `agent-chrome cdp <Method> [json]` cover the occasional need.
 - A dialog opened by something other than agent-chrome cannot be answered over
-  CDP; the tab is reported as frozen.
+  CDP; the tab is reported as not responding.
 - On Linux, `login`, `background` and `restart` restart the shared browser,
   closing every session's tabs and dropping session-only cookies.
 - Iframes nested inside a cross-site iframe are not listed.
 - It does not solve captchas. A human-looking browser sees fewer of them; when
   one appears, the agent is told to stop and ask.
 
-This is a personal tool for my own two machines. It works for me every day,
-but it is not packaged and I am not trying to grow it into a general project.
+This is a personal tool for my own two machines. It is not packaged, and I am
+not trying to grow it into a general project.
 
 ## License
 
