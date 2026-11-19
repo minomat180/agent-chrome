@@ -99,11 +99,14 @@ anything with spaces or shell characters.
   conversation: do not `agent-chrome text` it. Write it straight to a file, e.g.
   `agent-chrome eval --main '<expr>' > /path/file` with `chmod 600`, and report only that
   it was saved.
-- The browser's clipboard is not connected to mino's desktop: a page's "Copy"
-  button followed by `wl-paste` yields nothing.
-- Before `agent-chrome-ctl login`, `background`, `restart` or `update`: they restart the
-  one shared browser, closing every session's tabs and signing out sites whose
-  login is a session-only cookie. Check `agent-chrome tabs` and say so first.
+- Clipboard: on Linux the browser's clipboard is not connected to mino's
+  desktop (a page's "Copy" button followed by `wl-paste` yields nothing). On
+  macOS it is the normal system clipboard (`pbpaste`), which is mino's too:
+  do not leave secrets on it.
+- Before `agent-chrome-ctl restart` or `update` (and on Linux also `login` and
+  `background`): they restart the one shared browser, closing every session's
+  tabs and signing out sites whose login is a session-only cookie. Check
+  `agent-chrome tabs` and say so first.
 
 ## Passwords
 
@@ -116,6 +119,12 @@ command that runs something with a secret and the variable that holds it
 sh -c 'printf "%s" "$SECRET" | AGENT_CHROME_SESSION=<key> agent-chrome secret "#password"'
 ```
 
+On macOS the logins are vault entries named `pw.*` (the `vault` skill lists them).
+The vault's `logins.tsv` (see the `vault` skill) maps each name to its URL and username
+(no passwords in it), so look the username up there for `agent-chrome fill`.
+
+(On the Linux machine the web logins are in the iPod vault; same command.)
+
 `<key>` is the `session:` line of `agent-chrome status` (the vault runs outside this
 shell, so it has to be told which session's tab to type into). Fill the
 username with `agent-chrome fill` first, run `agent-chrome secret`, then `agent-chrome press Enter` or
@@ -123,8 +132,9 @@ click the submit button. The field stays masked in every later report.
 
 If a site needs mino himself (2FA prompt on his phone, a captcha, a consent
 screen): stop and ask. `agent-chrome-ctl login <url>` shows the browser on his
-screen for that; `agent-chrome-ctl background` hides it again. Both restart the
-browser, which closes every session's tabs - say so first.
+screen for that; `agent-chrome-ctl background` hides it again. On macOS that keeps
+every tab; on Linux both restart the browser, which closes every session's
+tabs - say so first there.
 
 ## When something is off
 

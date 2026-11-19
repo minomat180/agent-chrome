@@ -1,4 +1,4 @@
-# Reproducing the driver comparison (README, "Why replace what was there")
+# Reproducing the driver comparison (README, "Why I wrote it")
 
 All drivers were attached to the same throwaway Chrome, started exactly like
 the agent browser (headful, inside a headless cage, own profile, port 9555).

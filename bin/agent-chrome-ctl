@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # agent-chrome-ctl - lifecycle of the agent's own Chrome.
 #
 # A second Chrome, separate from mino's daily browser, with its own profile,
@@ -23,6 +23,9 @@
 
 set -uo pipefail
 
+# No cage, /proc or apt on macOS: a separate implementation, same commands.
+[ "$(uname -s)" = Darwin ] && exec "$(dirname "$(readlink -f "$0")")/agent-chrome-ctl-macos" "$@"
+
 PORT="${AGENT_CHROME_PORT:-9222}"
 STATE="${AGENT_CHROME_HOME:-$HOME/.local/share/agent-chrome}"
 PROFILE="${AGENT_CHROME_PROFILE:-$STATE/chrome-profile}"
@@ -39,6 +42,11 @@ POINTER="$HERE/../libexec/virtual-pointer.py"
 chrome_bin() {
   if [ -n "${AGENT_CHROME_BIN:-}" ]; then echo "$AGENT_CHROME_BIN"
   elif [ -x "$CHROME_DIR/current/chrome" ]; then echo "$CHROME_DIR/current/chrome"
+  elif [ -x /opt/google/chrome/chrome ]; then echo /opt/google/chrome/chrome
+  # NixOS: no /opt, and Google's prebuilt binary does not run unpatched;
+  # nixpkgs' google-chrome (or chromium) on PATH is the browser there.
+  elif command -v google-chrome-stable >/dev/null; then command -v google-chrome-stable
+  elif command -v chromium >/dev/null; then command -v chromium
   else echo /opt/google/chrome/chrome
   fi
 }
@@ -108,6 +116,13 @@ setup_headless_seat() {
   local chrome display
   chrome="$(pid_of "$CHROME_PID")" || return 0
   display="$(tr '\0' '\n' <"/proc/$chrome/environ" 2>/dev/null | sed -n 's/^WAYLAND_DISPLAY=//p')"
+  # Chrome may write its process title over its environment (seen with
+  # Chromium 157), so ask cage which wayland socket it listens on instead.
+  if [ -z "$display" ]; then
+    local cage
+    cage="$(pid_of "$CAGE_PID")" \
+      && display="$(ss -xlpn 2>/dev/null | grep -F "pid=$cage," | grep -o '/wayland-[0-9]*' | head -1 | tr -d /)"
+  fi
   [ -n "$display" ] || { echo "agent-chrome-ctl: could not find the compositor socket; no pointer device, default size" >&2; return 0; }
   if command -v wlr-randr >/dev/null; then
     WAYLAND_DISPLAY="$display" wlr-randr --output HEADLESS-1 --custom-mode "$SIZE" >>"$LOG" 2>&1 \
@@ -211,8 +226,10 @@ do_status() {
   fi
   echo "  chrome:  $running"
   latest="$(latest_version)"
+  local fix="agent-chrome-ctl update && agent-chrome-ctl restart"
+  [ -e /etc/NIXOS ] && fix="sudo nixos-rebuild switch --upgrade && agent-chrome-ctl restart (nixpkgs google-chrome)"
   if [ -n "$latest" ] && [ "${running%%.*}" != "${latest%%.*}" ]; then
-    echo "  WARNING: current stable is $latest ($(( ${latest%%.*} - ${running%%.*} )) major versions newer). Run: agent-chrome-ctl update && agent-chrome-ctl restart"
+    echo "  WARNING: current stable is $latest ($(( ${latest%%.*} - ${running%%.*} )) major versions newer). Run: $fix"
   elif [ -n "$latest" ] && [ "$running" != "$latest" ]; then
     echo "  update:  $latest is available (agent-chrome-ctl update)"
   fi
@@ -265,6 +282,11 @@ do_background() {
 # Release pins the hash of Packages, Packages pins the hash of the .deb.
 GOOGLE_KEY_FPR="EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796"
 do_update() {
+  if [ -e /etc/NIXOS ] && [ -z "${AGENT_CHROME_FORCE_UPDATE:-}" ]; then
+    echo "agent-chrome-ctl: NixOS: Chrome comes from nixpkgs (google-chrome in /etc/nixos/configuration.nix);"
+    echo "  update it with the system: sudo nixos-rebuild switch --upgrade, then agent-chrome-ctl restart"
+    return 0
+  fi
   local check=0 repo=https://dl.google.com/linux/chrome/deb tmp ver file sha have
   [ "${1:-}" = "--check" ] && check=1
   for tool in curl gpg ar tar sha256sum; do

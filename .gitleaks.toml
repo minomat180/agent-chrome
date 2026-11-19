@@ -1,0 +1,8 @@
+# GOOGLE_KEY_FPR in bin/agent-chrome-ctl is the public fingerprint of Google's
+# Linux package signing key, used to verify Chrome updates. Not a secret.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Google's public package signing key fingerprint"
+regexes = ['''EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796''']

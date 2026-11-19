@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # End-to-end tests: a throwaway Chrome (own profile, own port, headless cage)
 # driven through the real CLI against test/fixture.
 #
@@ -194,7 +194,12 @@ has "browser down is explained" "agent-chrome-ctl start" env AGENT_CHROME_PORT=9
 agent-chrome -q open $F/index.html >/dev/null
 has "has a mouse (hover: hover)"  "true"  agent-chrome eval 'matchMedia("(hover: hover)").matches && matchMedia("(pointer: fine)").matches'
 has "webdriver flag is off"       "false" agent-chrome eval --main 'String(navigator.webdriver)'
-has "1080p viewport"              "1920"  agent-chrome eval 'innerWidth'
+if [ "$(uname -s)" = Darwin ]; then
+  # macOS clamps the window to the screen, so 1920 only on a big enough display.
+  has "wide viewport"               "true"  agent-chrome eval 'innerWidth >= Math.min(1920, screen.availWidth) - 16'
+else
+  has "1080p viewport"              "1920"  agent-chrome eval 'innerWidth'
+fi
 
 echo
 echo "passed $pass, failed $fail"
