@@ -1,3 +1,0 @@
-# GOOGLE_KEY_FPR (bin/pib-chrome, now bin/agent-chrome-ctl) is the public fingerprint of Google's
-# Linux package signing key, used to verify Chrome updates. Not a secret.
-2e6dd8ec3e8f93fe28345d80183999ddc4b7943a:bin/pib-chrome:generic-api-key:255
