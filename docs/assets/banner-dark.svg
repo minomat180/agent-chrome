@@ -12,9 +12,9 @@
     <circle cx="970" cy="80" r="4" fill="#8b949e" stroke="none"/>
     <rect x="990" y="72" width="170" height="16" rx="8" stroke="#8b949e" stroke-width="2"/>
     <line x1="946" y1="124" x2="1090" y2="124" stroke="#8b949e" stroke-width="2"/>
-    <line x1="946" y1="144" x2="1150" y2="144" stroke="#30363d" stroke-width="2"/>
-    <line x1="946" y1="164" x2="1120" y2="164" stroke="#30363d" stroke-width="2"/>
+    <line x1="946" y1="144" x2="1150" y2="144" stroke="#8b949e" stroke-opacity="0.45" stroke-width="2"/>
+    <line x1="946" y1="164" x2="1120" y2="164" stroke="#8b949e" stroke-opacity="0.45" stroke-width="2"/>
     <rect x="946" y="190" width="96" height="30" rx="6" stroke="#4c8bf5" stroke-width="2"/>
   </g>
-  <path transform="translate(1016 198) scale(1.6)" d="M0 0 L0 26 L7 20 L12 31 L17 29 L12 18 L21 18 Z" fill="#4c8bf5" stroke="#0d1117" stroke-width="1.5" stroke-linejoin="round"/>
+  <path transform="translate(1016 198) scale(1.5)" d="M0 0 L0 26 L7 20 L12 31 L17 29 L12 18 L21 18 Z" fill="#4c8bf5" stroke="#0d1117" stroke-width="1.5" stroke-linejoin="round"/>
 </svg>

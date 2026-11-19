@@ -9,19 +9,16 @@
 
 ### Drive one real, signed-in Chrome from the shell
 
-**Gives a coding agent such as Claude Code one real Chrome to click, type and read in, and after every action tells it what changed on the page.**
+**Lets a coding agent such as Claude Code click, type and read in a signed-in Chrome of its own, and tells it after every action what changed on the page.**
 
 [![License](https://img.shields.io/github/license/minomat180/agent-chrome?style=flat-square&color=4c8bf5)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-4c8bf5?style=flat-square)](#platforms)
 [![Node](https://img.shields.io/badge/node-%3E%3D22-4c8bf5?style=flat-square&logo=nodedotjs&logoColor=white)](#quick-start)
-[![npm dependencies](https://img.shields.io/badge/npm%20dependencies-none-4c8bf5?style=flat-square)](#quick-start)
 [![Top language](https://img.shields.io/github/languages/top/minomat180/agent-chrome?style=flat-square&color=4c8bf5)](bin/agent-chrome)
 
 [Quick start](#quick-start) · [Platforms](#platforms) · [How it works](#how-it-works) · [Why I wrote it](#why-i-wrote-it) · [Tests](#tests) · [Limits](#limits)
 
-<code>git clone https://github.com/minomat180/agent-chrome && agent-chrome/bin/agent-chrome-ctl start</code>
-
-<br><br>
+<br>
 
 <img src="docs/demo/demo.gif" width="1000" alt="agent-chrome filling and submitting the httpbin.org order form from a terminal">
 
@@ -45,17 +42,18 @@ server and a Mac.
   `127.0.0.1:$AGENT_CHROME_PORT`. If nothing is there it fails and says to run
   `agent-chrome-ctl start`, so an agent cannot fall back to an anonymous
   headless browser.
-- **No automation signal from the driver.** It never sends `Runtime.enable`,
-  reads in an isolated world and clicks with trusted input events. On
-  bot-detector.rebrowser.net it scored 0 red and 0 yellow, where four other
-  drivers scored 2 or 3 red.
+- **Nothing for bot-detector.rebrowser.net to flag.** It scored 0 red and 0
+  yellow there, where four other drivers scored 2 or 3 red; the reasons are
+  under [How it works](#how-it-works).
 - **A tab per agent session.** Sessions are keyed by `AGENT_CHROME_SESSION` or
   Claude Code's `CLAUDE_CODE_SESSION_ID`, and `agent-chrome tabs` shows who owns
   which tab.
-- **Secrets typed from stdin.** `agent-chrome secret <target>` types a password
-  piped from a password manager key by key and masks the field in later reports.
-- **No daemon, no npm dependencies.** Each call connects, acts and exits; a read
-  such as `agent-chrome get title` takes about 0.1 s end to end.
+- **Secrets typed from stdin.** Pipe a password from a password manager into
+  `agent-chrome secret <target>`; it is never part of a command line or a
+  report the agent reads.
+- **No npm dependencies, no build step.** Node's built-in WebSocket and fetch
+  are all it uses; a read such as `agent-chrome get title` takes about 0.1 s
+  end to end.
 
 > [!IMPORTANT]
 > The browser is signed in to real accounts and CDP has no authentication.
@@ -92,6 +90,7 @@ There is no build step.
 | Command | What it does |
 |---|---|
 | `agent-chrome open <url>` | go to a URL in this session's tab and list the page with refs |
+| `agent-chrome snap [--find TEXT]` | list what can be acted on again, with refs |
 | `agent-chrome click`, `fill`, `select`, `check`, `hover` | act on a ref, `text=Label`, a CSS selector or `x,y`, then report what changed |
 | `agent-chrome press <key>`, `type <text>` | keys and text to whatever has focus |
 | `agent-chrome text`, `read`, `get`, `shot` | read the page or one element, or save a screenshot to a file |
@@ -114,7 +113,7 @@ For Claude Code, link the agent manual as a skill:
 | `AGENT_CHROME_SIZE` | `1920x1080` |
 | `AGENT_CHROME_BIN` | the private Chrome, else the system one |
 | `AGENT_CHROME_STATE_DIR` | `$XDG_RUNTIME_DIR/agent-chrome` (or `/tmp/agent-chrome`) |
-| `AGENT_CHROME_SESSION` | else `CLAUDE_CODE_SESSION_ID`, else `default` |
+| `AGENT_CHROME_SESSION` | `CLAUDE_CODE_SESSION_ID`, else `default` |
 | `AGENT_CHROME_NODE` | macOS only: the `node` that runs the window helper and the unload guard |
 
 </details>
@@ -125,7 +124,7 @@ For Claude Code, link the agent manual as a skill:
 |---|---|---|---|
 | Browser runs in | a headless `cage` compositor | a headless `cage` compositor | a minimised window |
 | Chrome comes from | `agent-chrome-ctl update` (Google's apt repo, signature checked) | nixpkgs `google-chrome` | `agent-chrome-ctl update` (Google's DMG, code signature checked) |
-| Started at boot or login by | your choice | a systemd user service | a LaunchAgent |
+| Started at boot or login by | nothing shipped; use your own service | a systemd user service | a LaunchAgent |
 | `login` / `background` | restart the browser | restart the browser | un-minimise / minimise, tabs survive |
 
 ### Linux
@@ -271,6 +270,4 @@ concurrent sessions, and the pointer, `webdriver` and viewport checks. It passes
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The driver borrows ideas from
-[agent-browser](https://github.com/vercel-labs/agent-browser) and
-browser-harness: refs from the accessibility tree and compositor-level input.
+MIT, see [LICENSE](LICENSE).
