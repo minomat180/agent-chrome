@@ -70,7 +70,7 @@ server and a Mac.
 
 ## Quick start
 
-| Needs | |
+| Platform | Needs |
 |---|---|
 | Everywhere | Node 22 or newer, bash, python3, curl |
 | Linux | [cage](https://github.com/cage-kiosk/cage) and `wlr-randr`; gpg, `ar`, tar and sha256sum for `agent-chrome-ctl update` |
@@ -191,8 +191,9 @@ start it at login with a LaunchAgent that runs `agent-chrome-ctl start`.
   (`event.isTrusted === true`) aimed at hit-tested coordinates, so they work
   through open and closed shadow DOM and cross-site iframes. A click on an
   element covered by a modal reports what covers it.
-- **Refs map to DOM `backendNodeId`s.** `e12` stays valid while that node
-  exists and is refused once the document is replaced.
+- **Refs are DOM node ids.** Each ref maps to a `backendNodeId`, so `e12`
+  stays valid while that node exists and is refused once the document is
+  replaced.
 - **Dialogs are answered inside the call.** `alert` is accepted; `confirm` and
   `prompt` are dismissed unless the command repeats with `--accept`.
 - **Secrets are masked, not sandboxed.** A field filled with `agent-chrome
