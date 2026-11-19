@@ -1,47 +1,47 @@
 #!/usr/bin/env node
-// pib - drive the agent's real, logged-in Chrome from the shell.
+// agent-chrome - drive the agent's real, logged-in Chrome from the shell.
 //
 // One browser (the one on 127.0.0.1:9222), one tab per agent session, no
 // daemon. Every call connects, acts, reports what changed, and disconnects.
-// See README.md for the why, and `pib help` for the commands.
+// See README.md for the why, and `agent-chrome help` for the commands.
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from "node:fs";
 import { join, resolve as resolvePath, dirname } from "node:path";
 import { homedir, tmpdir } from "node:os";
-import { CDP, PibError, sleep } from "../lib/cdp.mjs";
+import { CDP, AgentChromeError, sleep } from "../lib/cdp.mjs";
 import { Page } from "../lib/page.mjs";
 import * as State from "../lib/state.mjs";
 import { snapshot, render, diff } from "../lib/snapshot.mjs";
 
-const HELP = `pib - drive the agent's logged-in Chrome (one tab per session, refs like e12)
+const HELP = `agent-chrome - drive the agent's logged-in Chrome (one tab per session, refs like e12)
 
-  pib open <url>                 go to a URL in this session's tab (created on first use)
-  pib snap [--find TEXT] [-a]    list what can be acted on, with refs. -a adds page text
-  pib click <target>             [--force] [--double] [--right]
-  pib fill <target> <text>       replace a field's value
-  pib type <text>                type into whatever has focus   [--keys] per-key events
-  pib press <key>                Enter, Tab, Escape, ArrowDown, ctrl+a, shift+Tab ...
-  pib select <target> <option>   <select> by label or value
-  pib check|uncheck <target>     checkbox / radio / switch
-  pib hover <target>
-  pib scroll [down|up|top|bottom|<target>] [pages]
-  pib upload <target> <file>...
-  pib download <target>          click something that downloads; prints the saved path  [--to DIR]
-  pib secret <target>            type a secret from STDIN into a field; never echoed
-  pib text [target]              visible text of the page or one element   [--max N]
-  pib read [url] [--filter TEXT] readable article-style text   [--outline] [--links] [--max N]
-  pib html [target]              outer HTML   [--max N]
-  pib eval <js>                  evaluate (isolated world).  --main for page globals,  - reads stdin
-  pib get url|title|value <t>|attr <t> <name>|count <css>
-  pib wait <ms> | text <s> | gone <s> | sel <css> | url <part> | load   [--timeout MS]
-  pib shot [file] [--full] [--el <target>]     screenshot to a file (never inline)
-  pib back | forward | reload
-  pib tabs | tab new [url] | tab use <id> | tab close [id]
-  pib run                        batch: one command per line on STDIN, stops at first error
-  pib status | close | gc | cdp <Method> [json]
+  agent-chrome open <url>                 go to a URL in this session's tab (created on first use)
+  agent-chrome snap [--find TEXT] [-a]    list what can be acted on, with refs. -a adds page text
+  agent-chrome click <target>             [--force] [--double] [--right]
+  agent-chrome fill <target> <text>       replace a field's value
+  agent-chrome type <text>                type into whatever has focus   [--keys] per-key events
+  agent-chrome press <key>                Enter, Tab, Escape, ArrowDown, ctrl+a, shift+Tab ...
+  agent-chrome select <target> <option>   <select> by label or value
+  agent-chrome check|uncheck <target>     checkbox / radio / switch
+  agent-chrome hover <target>
+  agent-chrome scroll [down|up|top|bottom|<target>] [pages]
+  agent-chrome upload <target> <file>...
+  agent-chrome download <target>          click something that downloads; prints the saved path  [--to DIR]
+  agent-chrome secret <target>            type a secret from STDIN into a field; never echoed
+  agent-chrome text [target]              visible text of the page or one element   [--max N]
+  agent-chrome read [url] [--filter TEXT] readable article-style text   [--outline] [--links] [--max N]
+  agent-chrome html [target]              outer HTML   [--max N]
+  agent-chrome eval <js>                  evaluate (isolated world).  --main for page globals,  - reads stdin
+  agent-chrome get url|title|value <t>|attr <t> <name>|count <css>
+  agent-chrome wait <ms> | text <s> | gone <s> | sel <css> | url <part> | load   [--timeout MS]
+  agent-chrome shot [file] [--full] [--el <target>]     screenshot to a file (never inline)
+  agent-chrome back | forward | reload
+  agent-chrome tabs | tab new [url] | tab use <id> | tab close [id]
+  agent-chrome run                        batch: one command per line on STDIN, stops at first error
+  agent-chrome status | close | gc | cdp <Method> [json]
 
   target:  e12 (ref from snap)   text=Sign in   css selector   640,360 (x,y)
-  global:  --port N (PIB_PORT, 9222)   --session KEY (PIB_SESSION / PI_SESSION_ID)   -q no change report
+  global:  --port N (AGENT_CHROME_PORT, 9222)   --session KEY (AGENT_CHROME_SESSION / CLAUDE_CODE_SESSION_ID)   -q no change report
   dialogs: alert() is accepted and reported. confirm()/prompt() are DISMISSED and reported;
            repeat the command with --accept (and --prompt TEXT) to answer yes instead.
 `;
@@ -67,11 +67,11 @@ function takeOpt(args, name) {
   const i = args.indexOf(name);
   if (i < 0) return undefined;
   const [, v] = args.splice(i, 2);
-  if (v === undefined) throw new PibError(`${name} needs a value`);
+  if (v === undefined) throw new AgentChromeError(`${name} needs a value`);
   return v;
 }
 const need = (v, usage) => {
-  if (v === undefined || v === "") throw new PibError(`usage: pib ${usage}`);
+  if (v === undefined || v === "") throw new AgentChromeError(`usage: agent-chrome ${usage}`);
   return v;
 };
 
@@ -99,13 +99,13 @@ function tokenize(line) {
       has = false;
     } else cur += ch;
   }
-  if (quote) throw new PibError(`unterminated ${quote} in: ${line}`);
+  if (quote) throw new AgentChromeError(`unterminated ${quote} in: ${line}`);
   if (cur || has) out.push(cur);
   return out;
 }
 
 const readStdin = () => {
-  if (process.stdin.isTTY) throw new PibError("nothing on stdin");
+  if (process.stdin.isTTY) throw new AgentChromeError("nothing on stdin");
   return readFileSync(0, "utf8");
 };
 
@@ -152,7 +152,7 @@ class Ctx {
   async page({ create = false } = {}) {
     if (this.attached && this.attached.targetId === this.state.current) return this.attached;
     if (!this.state.current) {
-      if (!create) throw new PibError("this session has no tab yet", "pib open <url>   (or: pib tabs, then pib tab use <id> to take over an existing one)");
+      if (!create) throw new AgentChromeError("this session has no tab yet", "agent-chrome open <url>   (or: agent-chrome tabs, then agent-chrome tab use <id> to take over an existing one)");
       await this.newTab();
     }
     this.attached = await Page.attach(this.cdp, this.state.current);
@@ -183,10 +183,10 @@ class Ctx {
     need(spec, "<command> <target>   (target: e12 | text=Label | css selector | x,y)");
     if (/^e\d+$/.test(spec)) {
       const saved = this.saved(page);
-      if (!saved?.refs) throw new PibError(`no snapshot yet, so ${spec} means nothing`, "pib snap");
-      if (saved.loader !== page.loaderId) throw new PibError(`the page changed since ${spec} was issued`, "pib snap for the current refs");
+      if (!saved?.refs) throw new AgentChromeError(`no snapshot yet, so ${spec} means nothing`, "agent-chrome snap");
+      if (saved.loader !== page.loaderId) throw new AgentChromeError(`the page changed since ${spec} was issued`, "agent-chrome snap for the current refs");
       const r = saved.refs[spec.slice(1)];
-      if (!r) throw new PibError(`unknown ref ${spec}`, "pib snap for the current refs");
+      if (!r) throw new AgentChromeError(`unknown ref ${spec}`, "agent-chrome snap for the current refs");
       return { b: r[0], f: r[1], ref: spec };
     }
     const xy = spec.match(/^(\d+(?:\.\d+)?),(\d+(?:\.\d+)?)$/);
@@ -199,15 +199,15 @@ class Ctx {
       if (!hits.length) hits = named.filter((h) => h.name.includes(want));
       // Last resort: the whole line, so `text=Delete (in: Invoice 12)` picks one of several twins.
       if (!hits.length) hits = named.filter((h) => h.line.replace(/"/g, "").toLowerCase().includes(want.replace(/"/g, "")));
-      if (!hits.length) throw new PibError(`nothing on the page is labelled ${JSON.stringify(spec.slice(5))}`, "pib snap --find ... to see what is there");
+      if (!hits.length) throw new AgentChromeError(`nothing on the page is labelled ${JSON.stringify(spec.slice(5))}`, "agent-chrome snap --find ... to see what is there");
       if (hits.length > 1) {
-        throw new PibError(`${hits.length} elements match ${JSON.stringify(spec.slice(5))}:\n` + hits.slice(0, 8).map((h) => `  e${h.ref} ${h.line}`).join("\n"), "use the ref of the one you mean");
+        throw new AgentChromeError(`${hits.length} elements match ${JSON.stringify(spec.slice(5))}:\n` + hits.slice(0, 8).map((h) => `  e${h.ref} ${h.line}`).join("\n"), "use the ref of the one you mean");
       }
       const r = snap.refs[hits[0].ref];
       return { b: r[0], f: r[1], ref: `e${hits[0].ref}` };
     }
     const { node, count } = await page.query(spec);
-    if (!node) throw new PibError(`no element matches ${JSON.stringify(spec)}`, "check the selector, or use a ref from pib snap");
+    if (!node) throw new AgentChromeError(`no element matches ${JSON.stringify(spec)}`, "check the selector, or use a ref from agent-chrome snap");
     return { ...node, ref: spec, count };
   }
 
@@ -244,7 +244,7 @@ class Ctx {
       this.attached = null;
       page = await this.page();
       await page.settle({ idleMax: 2500 });
-      out.push(`opened a new tab and switched to it (${short(fresh)}); the previous one is still open: pib tab use ${short(previous)}`);
+      out.push(`opened a new tab and switched to it (${short(fresh)}); the previous one is still open: agent-chrome tab use ${short(previous)}`);
       this.before = null;
     }
 
@@ -264,7 +264,7 @@ class Ctx {
           const seen = new Set(b.text.split("\n").map((l) => l.trim()));
           const fresh = [...new Set(after.split("\n").map((l) => l.trim()).filter((l) => l.length > 1 && !seen.has(l)))];
           for (const l of fresh.slice(0, 8)) changes.push(`text+ ${l.length > 160 ? l.slice(0, 160) + "…" : l}`);
-          if (fresh.length > 8) changes.push(`… +${fresh.length - 8} more new text lines (pib text)`);
+          if (fresh.length > 8) changes.push(`… +${fresh.length - 8} more new text lines (agent-chrome text)`);
         } catch {}
       }
       out.push(changes.length ? changes.join("\n") : "(nothing visible changed)");
@@ -363,11 +363,11 @@ async function fill(page, node, text) {
   if (kind === "select") return select(page, node, text);
   if (kind.startsWith("bad:")) {
     const ty = kind.slice(4);
-    throw new PibError(`${node.ref} is an <input type=${ty}>, not a text field`, ty === "file" ? "pib upload <target> <file>" : ty === "checkbox" || ty === "radio" ? "pib check <target>  /  pib click <target>" : "pib click <target>");
+    throw new AgentChromeError(`${node.ref} is an <input type=${ty}>, not a text field`, ty === "file" ? "agent-chrome upload <target> <file>" : ty === "checkbox" || ty === "radio" ? "agent-chrome check <target>  /  agent-chrome click <target>" : "agent-chrome click <target>");
   }
   if (kind === "native") {
     const now = await page.callOn(node, NATIVE_SET, [text]);
-    if (now !== text) throw new PibError(`${node.ref} rejected ${JSON.stringify(text)} (it now holds ${JSON.stringify(now)})`, "date fields want YYYY-MM-DD, time HH:MM, color #rrggbb");
+    if (now !== text) throw new AgentChromeError(`${node.ref} rejected ${JSON.stringify(text)} (it now holds ${JSON.stringify(now)})`, "date fields want YYYY-MM-DD, time HH:MM, color #rrggbb");
     return `filled ${node.ref}`;
   }
   const before = kind === "other" ? null : await page.callOn(node, FIELD_VALUE);
@@ -375,7 +375,7 @@ async function fill(page, node, text) {
   if (text === "") await page.press("Delete", node);
   else await page.insertText(text, node);
   await sleep(40);
-  if (kind === "other") return `typed into ${node.ref} (not a plain field, so the result is not verified; check with pib snap)`;
+  if (kind === "other") return `typed into ${node.ref} (not a plain field, so the result is not verified; check with agent-chrome snap)`;
   let now = await page.callOn(node, FIELD_VALUE);
   const same = (a, b) => String(a).replace(/\r\n/g, "\n").trimEnd() === String(b).replace(/\r\n/g, "\n").trimEnd();
   if (same(now, text)) return `filled ${node.ref}`;
@@ -405,9 +405,9 @@ async function select(page, node, want) {
     }`,
     [want],
   );
-  if (r.error === "not-select") throw new PibError(`${node.ref} is not a native <select>`, "it is a custom dropdown: pib click it, then pib click the option that appears");
-  if (r.error === "no-option") throw new PibError(`${node.ref} has no option ${JSON.stringify(want)}`, `options: ${r.options.join(" | ")}`);
-  if (r.error === "disabled") throw new PibError(`that option of ${node.ref} is disabled`);
+  if (r.error === "not-select") throw new AgentChromeError(`${node.ref} is not a native <select>`, "it is a custom dropdown: agent-chrome click it, then agent-chrome click the option that appears");
+  if (r.error === "no-option") throw new AgentChromeError(`${node.ref} has no option ${JSON.stringify(want)}`, `options: ${r.options.join(" | ")}`);
+  if (r.error === "disabled") throw new AgentChromeError(`that option of ${node.ref} is disabled`);
   return `selected ${JSON.stringify(r.label)} in ${node.ref}`;
 }
 
@@ -423,7 +423,7 @@ const COMMANDS = {
     ctx.mutated = true;
     ctx.listAfter = true;
     const r = await page.navigate(url);
-    if (r.download) return "that URL is a download, not a page (use: pib download, or curl)";
+    if (r.download) return "that URL is a download, not a page (use: agent-chrome download, or curl)";
     return r.slow ? "opened (still loading after 30s; continuing)" : "";
   },
 
@@ -457,8 +457,8 @@ const COMMANDS = {
   async fill(ctx, args) {
     const page = await ctx.page();
     const node = await ctx.resolve(page, args[0]);
-    if (node.pt) throw new PibError("fill needs an element, not coordinates", "pib click x,y  then  pib type <text>");
-    if (args.length < 2) throw new PibError("usage: pib fill <target> <text>");
+    if (node.pt) throw new AgentChromeError("fill needs an element, not coordinates", "agent-chrome click x,y  then  agent-chrome type <text>");
+    if (args.length < 2) throw new AgentChromeError("usage: agent-chrome fill <target> <text>");
     await ctx.willMutate(page);
     const msg = await fill(page, node, args.slice(1).join(" "));
     await page.settle({ idleMax: 1200 });
@@ -501,14 +501,14 @@ const COMMANDS = {
     const node = await ctx.resolve(page, args.join(" "));
     const state = await page.callOn(node, READ_CHECKED);
     const is = state === true || state === "true";
-    if (state === null || state === undefined) throw new PibError(`${node.ref} is not a checkbox, radio or switch`, "pib click <target>");
+    if (state === null || state === undefined) throw new AgentChromeError(`${node.ref} is not a checkbox, radio or switch`, "agent-chrome click <target>");
     if (is === want) return `${node.ref} is already ${want ? "checked" : "unchecked"}`;
     await ctx.willMutate(page);
     await page.click(node);
     await page.settle({ idleMax: 1200 });
     // Say "checked" only if it is: a click can land beside a restyled control.
     const now = await page.callOn(node, READ_CHECKED);
-    if ((now === true || now === "true") !== want) throw new PibError(`clicked ${node.ref}, but it is still ${want ? "unchecked" : "checked"}`, "the visible control may be a separate element: pib snap --find its label and click that");
+    if ((now === true || now === "true") !== want) throw new AgentChromeError(`clicked ${node.ref}, but it is still ${want ? "unchecked" : "checked"}`, "the visible control may be a separate element: agent-chrome snap --find its label and click that");
     return `${want ? "checked" : "unchecked"} ${node.ref}`;
   },
   uncheck(ctx, args) {
@@ -549,8 +549,8 @@ const COMMANDS = {
     const page = await ctx.page();
     const node = await ctx.resolve(page, args[0]);
     const files = args.slice(1).map((f) => resolvePath(f.replace(/^~(?=\/|$)/, homedir())));
-    if (!files.length) throw new PibError("usage: pib upload <target> <file>...");
-    for (const f of files) if (!existsSync(f) || !statSync(f).isFile()) throw new PibError(`no such file: ${f}`);
+    if (!files.length) throw new AgentChromeError("usage: agent-chrome upload <target> <file>...");
+    for (const f of files) if (!existsSync(f) || !statSync(f).isFile()) throw new AgentChromeError(`no such file: ${f}`);
     await ctx.willMutate(page);
     const sid = node.f ? page.kids.get(node.f)?.sessionId : page.sessionId;
     const isInput = !node.pt && (await page.callOn(node, `function () { return this.tagName === "INPUT" && this.type === "file"; }`));
@@ -564,7 +564,7 @@ const COMMANDS = {
         if (node.pt) await page.clickAt(node.pt);
         else await page.click(node);
         const ev = await opened;
-        if (!ev) throw new PibError(`clicking ${node.ref} did not open a file chooser`, "target the <input type=file> itself (pib snap shows it as type=file)");
+        if (!ev) throw new AgentChromeError(`clicking ${node.ref} did not open a file chooser`, "target the <input type=file> itself (agent-chrome snap shows it as type=file)");
         await page.send("DOM.setFileInputFiles", { files, backendNodeId: ev.params.backendNodeId });
       } finally {
         await page.send("Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
@@ -576,7 +576,7 @@ const COMMANDS = {
 
   async download(ctx, args) {
     const page = await ctx.page();
-    const dir = resolvePath((takeOpt(args, "--to") || join(homedir(), "Downloads", "pib")).replace(/^~(?=\/|$)/, homedir()));
+    const dir = resolvePath((takeOpt(args, "--to") || join(homedir(), "Downloads", "agent-chrome")).replace(/^~(?=\/|$)/, homedir()));
     const timeout = Number(takeOpt(args, "--timeout") || 120000);
     const node = await ctx.resolve(page, args.join(" "));
     mkdirSync(dir, { recursive: true });
@@ -592,10 +592,10 @@ const COMMANDS = {
       else await page.click(node);
       const t0 = Date.now();
       while (!seen.size && Date.now() - t0 < 8000) await sleep(100);
-      if (!seen.size) throw new PibError(`clicking ${node.ref} did not start a download`);
+      if (!seen.size) throw new AgentChromeError(`clicking ${node.ref} did not start a download`);
       const d = [...seen.values()][0];
       while (d.state === "inProgress" && Date.now() - t0 < timeout) await sleep(150);
-      if (d.state !== "completed") throw new PibError(`download ${d.state === "inProgress" ? "still running after " + timeout + "ms" : d.state}: ${d.name}`);
+      if (d.state !== "completed") throw new AgentChromeError(`download ${d.state === "inProgress" ? "still running after " + timeout + "ms" : d.state}: ${d.name}`);
       return `downloaded ${join(dir, d.name)}`;
     } finally {
       off();
@@ -610,13 +610,13 @@ const COMMANDS = {
     const keep = takeFlag(args, "--no-clear");
     const page = await ctx.page();
     const node = await ctx.resolve(page, args[0]);
-    if (node.pt) throw new PibError("secret needs an element, not coordinates");
+    if (node.pt) throw new AgentChromeError("secret needs an element, not coordinates");
     let secret = readStdin().replace(/\r?\n$/, "");
-    if (!secret) throw new PibError("empty secret on stdin");
+    if (!secret) throw new AgentChromeError("empty secret on stdin");
     await ctx.willMutate(page);
     ctx.hideText = true;
     const kind = await page.callOn(node, FIELD_KIND);
-    if (kind !== "text") throw new PibError(`${node.ref} is not a text or password field`);
+    if (kind !== "text") throw new AgentChromeError(`${node.ref} is not a text or password field`);
     const saved = ctx.saved(page);
     if (saved && /^e\d+$/.test(node.ref)) saved.hidden = [...new Set([...(saved.hidden || []), node.ref.slice(1)])];
     await focusForTyping(page, node);
@@ -634,7 +634,7 @@ const COMMANDS = {
     let t;
     if (args[0]) {
       const node = await ctx.resolve(page, args.join(" "));
-      if (node.pt) throw new PibError("text needs an element, not coordinates");
+      if (node.pt) throw new AgentChromeError("text needs an element, not coordinates");
       t = await page.callOn(node, `function () { if (this.type === "password") return "(hidden: password field)"; return this.value !== undefined && this.value !== "" && !this.innerText ? String(this.value) : (this.innerText ?? this.textContent ?? ""); }`);
     } else t = await page.eval("document.body ? document.body.innerText : ''");
     t = String(t).replace(/\n{3,}/g, "\n\n").trim();
@@ -648,7 +648,7 @@ const COMMANDS = {
     const outline = takeFlag(args, "--outline");
     let head = "";
     if (args[0]) {
-      // `pib read <url>`: go there first, then read. One call for "what does this page say".
+      // `agent-chrome read <url>`: go there first, then read. One call for "what does this page say".
       await COMMANDS.open(ctx, [args[0]]);
       ctx.mutated = false; // the text is the answer; an element list on top would be noise
       const page = await ctx.page();
@@ -704,10 +704,10 @@ const COMMANDS = {
     if (what === "count") return String((await page.query(need(args[1], "get count <css>"))).count);
     const node = await ctx.resolve(page, args[1]);
     const secret = /^e\d+$/.test(node.ref) && ctx.saved(page)?.hidden?.includes(node.ref.slice(1));
-    if (what === "value") return secret ? "(hidden: entered with pib secret)" : String(await page.callOn(node, SHOWN_VALUE));
+    if (what === "value") return secret ? "(hidden: entered with agent-chrome secret)" : String(await page.callOn(node, SHOWN_VALUE));
     if (what === "attr") return String(await page.callOn(node, "function (n) { return this.getAttribute(n); }", [need(args[2], "get attr <target> <name>")]));
     if (what === "box") return JSON.stringify(await page.locate(node));
-    throw new PibError(`unknown: get ${what}`, "get url|title|value <target>|attr <target> <name>|count <css>");
+    throw new AgentChromeError(`unknown: get ${what}`, "get url|title|value <target>|attr <target> <name>|count <css>");
   },
 
   async wait(ctx, args) {
@@ -738,7 +738,7 @@ const COMMANDS = {
     } else if (what === "load" || what === "idle") {
       await page.waitFor(() => page.eval(`document.readyState === "complete"`), { timeout, what: "the page to finish loading" });
       await page.settle();
-    } else throw new PibError(`unknown: wait ${what}`, "wait <ms> | text <s> | gone <s> | sel <css> | url <part> | load");
+    } else throw new AgentChromeError(`unknown: wait ${what}`, "wait <ms> | text <s> | gone <s> | sel <css> | url <part> | load");
     return done();
   },
 
@@ -749,7 +749,7 @@ const COMMANDS = {
     const jpeg = takeFlag(args, "--jpeg") || /\.jpe?g$/i.test(args[0] || "");
     let file = args[0];
     if (!file) {
-      const dir = join(tmpdir(), "pib");
+      const dir = join(tmpdir(), "agent-chrome");
       mkdirSync(dir, { recursive: true });
       file = join(dir, `shot-${new Date().toISOString().replace(/[:.]/g, "-")}.${jpeg ? "jpg" : "png"}`);
     }
@@ -782,7 +782,7 @@ const COMMANDS = {
       await sleep(120);
       data = await page.send("Page.captureScreenshot", params, 8000).then((r) => r.data, () => null);
     }
-    if (!data) throw new PibError("the screenshot timed out twice", "the tab may be blocked by a dialog; pib status");
+    if (!data) throw new AgentChromeError("the screenshot timed out twice", "the tab may be blocked by a dialog; agent-chrome status");
     const buf = Buffer.from(data, "base64");
     writeFileSync(file, buf);
     const scale = params.clip?.scale || 1;
@@ -793,7 +793,7 @@ const COMMANDS = {
     const page = await ctx.page();
     const { currentIndex, entries } = await page.send("Page.getNavigationHistory");
     const entry = entries[currentIndex + delta];
-    if (!entry) throw new PibError(delta < 0 ? "no earlier page in this tab's history" : "no later page in this tab's history");
+    if (!entry) throw new AgentChromeError(delta < 0 ? "no earlier page in this tab's history" : "no later page in this tab's history");
     ctx.mutated = true;
     ctx.listAfter = true;
     await page.send("Page.navigateToHistoryEntry", { entryId: entry.id });
@@ -832,8 +832,8 @@ const COMMANDS = {
     const sub = need(args[0], "tab new [url] | tab use <id> | tab close [id]");
     const find = async (prefix) => {
       const hits = (await ctx.targets()).filter((t) => t.targetId.toLowerCase().startsWith(prefix.toLowerCase()));
-      if (!hits.length) throw new PibError(`no tab id starts with ${prefix}`, "pib tabs");
-      if (hits.length > 1) throw new PibError(`${hits.length} tabs start with ${prefix}`, "give more characters of the id");
+      if (!hits.length) throw new AgentChromeError(`no tab id starts with ${prefix}`, "agent-chrome tabs");
+      if (hits.length > 1) throw new AgentChromeError(`${hits.length} tabs start with ${prefix}`, "give more characters of the id");
       return hits[0].targetId;
     };
     if (sub === "new") {
@@ -854,7 +854,7 @@ const COMMANDS = {
     }
     if (sub === "close") {
       const id = args[1] ? await find(args[1]) : ctx.state.current;
-      if (!id) throw new PibError("no tab to close");
+      if (!id) throw new AgentChromeError("no tab to close");
       await ctx.cdp.send("Target.closeTarget", { targetId: id });
       ctx.state.tabs = ctx.state.tabs.filter((t) => t !== id);
       delete ctx.state.pages[id];
@@ -864,7 +864,7 @@ const COMMANDS = {
       }
       return `closed ${short(id)}${ctx.state.current ? `; now on ${short(ctx.state.current)}` : "; this session has no tab now"}`;
     }
-    throw new PibError(`unknown: tab ${sub}`, "tab new [url] | tab use <id> | tab close [id]");
+    throw new AgentChromeError(`unknown: tab ${sub}`, "tab new [url] | tab use <id> | tab close [id]");
   },
 
   async close(ctx) {
@@ -904,7 +904,7 @@ const COMMANDS = {
     const lines = [
       `browser: ${ctx.cdp.info.Browser} on 127.0.0.1:${ctx.cdp.port}`,
       `session: ${ctx.state.key}`,
-      cur ? `tab:     ${short(cur.targetId)}  ${cur.title || "(untitled)"} | ${cur.url}` : "tab:     none yet (pib open <url>)",
+      cur ? `tab:     ${short(cur.targetId)}  ${cur.title || "(untitled)"} | ${cur.url}` : "tab:     none yet (agent-chrome open <url>)",
       `tabs:    ${ctx.state.tabs.length} owned by this session, ${targets.length} open in total`,
     ];
     return lines.join("\n");
@@ -919,7 +919,7 @@ const COMMANDS = {
       try {
         params = JSON.parse(args.slice(1).join(" "));
       } catch {
-        throw new PibError("the params are not valid JSON");
+        throw new AgentChromeError("the params are not valid JSON");
       }
     }
     const r = browser ? await ctx.cdp.send(method, params) : await (await ctx.page()).send(method, params);
@@ -936,7 +936,7 @@ const COMMANDS = {
 
 async function main() {
   const argv = process.argv.slice(2);
-  const opts = { port: Number(process.env.PIB_PORT || 9222), quiet: false };
+  const opts = { port: Number(process.env.AGENT_CHROME_PORT || 9222), quiet: false };
   while (argv[0]?.startsWith("-")) {
     const flag = argv.shift();
     if (flag === "--port") opts.port = Number(argv.shift());
@@ -949,14 +949,14 @@ async function main() {
       opts.accept = true;
     }
     else if (flag === "-h" || flag === "--help") argv.unshift("help");
-    else throw new PibError(`unknown option ${flag}`, "pib help");
+    else throw new AgentChromeError(`unknown option ${flag}`, "agent-chrome help");
   }
   const name = argv.shift() || "help";
   if (name === "help") {
     process.stdout.write(HELP);
     return 0;
   }
-  if (name !== "run" && !COMMANDS[name]) throw new PibError(`unknown command "${name}"`, "pib help");
+  if (name !== "run" && !COMMANDS[name]) throw new AgentChromeError(`unknown command "${name}"`, "agent-chrome help");
 
   const cdp = await CDP.connect(opts.port);
   const state = State.load(State.sessionKey(opts.session));
@@ -967,21 +967,21 @@ async function main() {
     await ctx.sync();
     if (name === "run") {
       const lines = readStdin().split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
-      if (!lines.length) throw new PibError("pib run: no commands on stdin");
+      if (!lines.length) throw new AgentChromeError("agent-chrome run: no commands on stdin");
       for (const [i, line] of lines.entries()) {
         const tokens = tokenize(line);
-        if (tokens[0] === "pib") tokens.shift();
+        if (tokens[0] === "agent-chrome") tokens.shift();
         const cmd = tokens.shift();
         const prompt = takeOpt(tokens, "--prompt");
         ctx.policy.accept = !!opts.accept || takeFlag(tokens, "--accept") || prompt !== undefined;
         ctx.policy.promptText = prompt ?? opts.prompt;
         try {
-          if (!COMMANDS[cmd] || cmd === "help") throw new PibError(`unknown command "${cmd}"`, "pib help");
-          if (cmd === "secret") throw new PibError("secret cannot be used inside pib run (stdin is the command list)", "run it as its own call");
+          if (!COMMANDS[cmd] || cmd === "help") throw new AgentChromeError(`unknown command "${cmd}"`, "agent-chrome help");
+          if (cmd === "secret") throw new AgentChromeError("secret cannot be used inside agent-chrome run (stdin is the command list)", "run it as its own call");
           const r = await COMMANDS[cmd](ctx, tokens);
           out.push(`[${i + 1}] ${line.length > 70 ? line.slice(0, 70) + "…" : line}${r ? "\n" + r : ""}`);
         } catch (err) {
-          if (!(err instanceof PibError)) throw err;
+          if (!(err instanceof AgentChromeError)) throw err;
           out.push(`[${i + 1}] ${line}\nerror: ${err.message}${err.hint ? `\nhint: ${err.hint}` : ""}`);
           if (i + 1 < lines.length) out.push(`stopped: ${lines.length - i - 1} later command${lines.length - i - 1 === 1 ? "" : "s"} not run`);
           code = 1;
@@ -1011,8 +1011,8 @@ async function main() {
 main().then(
   (code) => process.exit(code),
   (err) => {
-    if (err instanceof PibError) process.stderr.write(`error: ${err.message}${err.hint ? `\nhint: ${err.hint}` : ""}\n`);
-    else process.stderr.write(`pib: internal error: ${err?.stack || err}\n`);
-    process.exit(err instanceof PibError ? 1 : 2);
+    if (err instanceof AgentChromeError) process.stderr.write(`error: ${err.message}${err.hint ? `\nhint: ${err.hint}` : ""}\n`);
+    else process.stderr.write(`agent-chrome: internal error: ${err?.stack || err}\n`);
+    process.exit(err instanceof AgentChromeError ? 1 : 2);
   },
 );
