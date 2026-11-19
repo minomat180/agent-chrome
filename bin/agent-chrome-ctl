@@ -1,5 +1,5 @@
 #!/bin/bash
-# pib-chrome - lifecycle of the agent's own Chrome.
+# agent-chrome-ctl - lifecycle of the agent's own Chrome.
 #
 # A second Chrome, separate from mino's daily browser, with its own profile,
 # exposing CDP on loopback. Normally invisible: it runs inside a headless
@@ -23,10 +23,10 @@
 
 set -uo pipefail
 
-PORT="${PIB_PORT:-9222}"
-STATE="${PIB_HOME:-$HOME/.local/share/pib}"
-PROFILE="${PIB_PROFILE:-$HOME/.local/share/pi-browser/chrome-profile}"
-SIZE="${PIB_SIZE:-1920x1080}"
+PORT="${AGENT_CHROME_PORT:-9222}"
+STATE="${AGENT_CHROME_HOME:-$HOME/.local/share/agent-chrome}"
+PROFILE="${AGENT_CHROME_PROFILE:-$STATE/chrome-profile}"
+SIZE="${AGENT_CHROME_SIZE:-1920x1080}"
 LOG="$STATE/chrome.log"
 MODE_FILE="$STATE/mode"
 CAGE_PID="$STATE/cage.pid"
@@ -37,7 +37,7 @@ HERE="$(dirname "$(readlink -f "$0")")"
 POINTER="$HERE/../libexec/virtual-pointer.py"
 
 chrome_bin() {
-  if [ -n "${PIB_CHROME_BIN:-}" ]; then echo "$PIB_CHROME_BIN"
+  if [ -n "${AGENT_CHROME_BIN:-}" ]; then echo "$AGENT_CHROME_BIN"
   elif [ -x "$CHROME_DIR/current/chrome" ]; then echo "$CHROME_DIR/current/chrome"
   else echo /opt/google/chrome/chrome
   fi
@@ -45,7 +45,7 @@ chrome_bin() {
 
 usage() {
   cat <<'EOF'
-usage: pib-chrome <command>
+usage: agent-chrome-ctl <command>
 
   start [--visible]   launch (default: invisible, cannot take focus)
   stop                shut down the browser this script started
@@ -56,7 +56,7 @@ usage: pib-chrome <command>
   update [--check]    install the current stable Chrome privately (verified)
   profile             print the profile path
 
-env: PIB_PORT PIB_PROFILE PIB_HOME PIB_SIZE PIB_CHROME_BIN
+env: AGENT_CHROME_PORT AGENT_CHROME_PROFILE AGENT_CHROME_HOME AGENT_CHROME_SIZE AGENT_CHROME_BIN
 EOF
 }
 
@@ -69,7 +69,7 @@ pid_of() {
   p="$(cat "$1" 2>/dev/null)" && [ -n "$p" ] && kill -0 "$p" 2>/dev/null || return 1
   case "$1" in
     "$CHROME_PID")  want="--user-data-dir=$PROFILE" ;;
-    "$CAGE_PID")    want="pib-cage" ;;
+    "$CAGE_PID")    want="agent-chrome-cage" ;;
     "$POINTER_PID") want="virtual-pointer.py" ;;
   esac
   tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null | grep -qF -- "$want" && echo "$p"
@@ -108,10 +108,10 @@ setup_headless_seat() {
   local chrome display
   chrome="$(pid_of "$CHROME_PID")" || return 0
   display="$(tr '\0' '\n' <"/proc/$chrome/environ" 2>/dev/null | sed -n 's/^WAYLAND_DISPLAY=//p')"
-  [ -n "$display" ] || { echo "pib-chrome: could not find the compositor socket; no pointer device, default size" >&2; return 0; }
+  [ -n "$display" ] || { echo "agent-chrome-ctl: could not find the compositor socket; no pointer device, default size" >&2; return 0; }
   if command -v wlr-randr >/dev/null; then
     WAYLAND_DISPLAY="$display" wlr-randr --output HEADLESS-1 --custom-mode "$SIZE" >>"$LOG" 2>&1 \
-      || echo "pib-chrome: could not set $SIZE, staying at the compositor default" >&2
+      || echo "agent-chrome-ctl: could not set $SIZE, staying at the compositor default" >&2
   fi
   if [ -f "$POINTER" ]; then
     setsid nohup python3 "$POINTER" "$display" >>"$LOG" 2>&1 </dev/null &
@@ -126,12 +126,12 @@ do_start() {
   chrome="$(chrome_bin)"
 
   if alive; then
-    if ours; then echo "pib-chrome: already running ($(mode) mode) on 127.0.0.1:$PORT"
-    else echo "pib-chrome: port $PORT is already served by another browser (pid $(port_owner), not started by pib-chrome); leaving it alone"
+    if ours; then echo "agent-chrome-ctl: already running ($(mode) mode) on 127.0.0.1:$PORT"
+    else echo "agent-chrome-ctl: port $PORT is already served by another browser (pid $(port_owner), not started by agent-chrome-ctl); leaving it alone"
     fi
     return 0
   fi
-  [ -x "$chrome" ] || { echo "pib-chrome: no Chrome at $chrome (try: pib-chrome update)" >&2; return 1; }
+  [ -x "$chrome" ] || { echo "agent-chrome-ctl: no Chrome at $chrome (try: agent-chrome-ctl update)" >&2; return 1; }
   mkdir -p "$PROFILE" "$STATE"
 
   mapfile -t args < <(chrome_args)
@@ -140,15 +140,15 @@ do_start() {
     disown
     echo visible >"$MODE_FILE"
   else
-    command -v cage >/dev/null || { echo "pib-chrome: cage is not installed; use --visible, or install cage" >&2; return 1; }
+    command -v cage >/dev/null || { echo "agent-chrome-ctl: cage is not installed; use --visible, or install cage" >&2; return 1; }
     # A private name for the compositor process, so nothing that goes looking
     # for "cage" (e.g. the old pi-chrome) can mistake it for its own.
-    ln -sfn "$(command -v cage)" "$STATE/pib-cage"
+    ln -sfn "$(command -v cage)" "$STATE/agent-chrome-cage"
     # No WAYLAND_DISPLAY/DISPLAY: wlroots must pick the headless backend, not
     # nest a visible window inside the desktop session.
     env -u WAYLAND_DISPLAY -u DISPLAY \
       WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=1 \
-      setsid nohup "$STATE/pib-cage" -- "$chrome" "${args[@]}" --no-startup-window \
+      setsid nohup "$STATE/agent-chrome-cage" -- "$chrome" "${args[@]}" --no-startup-window \
       >>"$LOG" 2>&1 </dev/null &
     echo $! >"$CAGE_PID"
     disown
@@ -156,12 +156,12 @@ do_start() {
   fi
 
   if ! wait_up; then
-    echo "pib-chrome: did not come up within 15s; see $LOG" >&2
+    echo "agent-chrome-ctl: did not come up within 15s; see $LOG" >&2
     return 1
   fi
   record_chrome_pid
   [ "$visible" = 1 ] || setup_headless_seat
-  echo "pib-chrome: up on 127.0.0.1:$PORT ($(mode) mode, $("$chrome" --version 2>/dev/null | sed 's/ *$//'))"
+  echo "agent-chrome-ctl: up on 127.0.0.1:$PORT ($(mode) mode, $("$chrome" --version 2>/dev/null | sed 's/ *$//'))"
 }
 
 do_stop() {
@@ -171,10 +171,10 @@ do_stop() {
   pointer="$(pid_of "$POINTER_PID")"
   if [ -z "$chrome" ] && [ -z "$cage" ]; then
     if alive; then
-      echo "pib-chrome: the browser on port $PORT was not started by pib-chrome (pid $(port_owner)); not touching it" >&2
+      echo "agent-chrome-ctl: the browser on port $PORT was not started by agent-chrome-ctl (pid $(port_owner)); not touching it" >&2
       return 1
     fi
-    echo "pib-chrome: not running"
+    echo "agent-chrome-ctl: not running"
     rm -f "$MODE_FILE" "$CHROME_PID" "$CAGE_PID" "$POINTER_PID"
     return 0
   fi
@@ -191,7 +191,7 @@ do_stop() {
   [ -n "$cage" ] && kill "$cage" 2>/dev/null
   [ -n "$pointer" ] && kill "$pointer" 2>/dev/null
   rm -f "$MODE_FILE" "$CHROME_PID" "$CAGE_PID" "$POINTER_PID"
-  echo "pib-chrome: stopped"
+  echo "agent-chrome-ctl: stopped"
 }
 
 latest_version() {
@@ -201,20 +201,20 @@ latest_version() {
 
 do_status() {
   if ! alive; then
-    echo "pib-chrome: DOWN (port $PORT)"
+    echo "agent-chrome-ctl: DOWN (port $PORT)"
     return 1
   fi
   local running latest
   running="$(curl -s --max-time 3 "http://127.0.0.1:$PORT/json/version" | sed -n 's/.*"Browser": "[^/]*\/\([^"]*\)".*/\1/p')"
-  if ours; then echo "pib-chrome: UP on 127.0.0.1:$PORT  [$(mode) mode]"
-  else echo "pib-chrome: a browser is UP on 127.0.0.1:$PORT, but it was not started by pib-chrome (pid $(port_owner))"
+  if ours; then echo "agent-chrome-ctl: UP on 127.0.0.1:$PORT  [$(mode) mode]"
+  else echo "agent-chrome-ctl: a browser is UP on 127.0.0.1:$PORT, but it was not started by agent-chrome-ctl (pid $(port_owner))"
   fi
   echo "  chrome:  $running"
   latest="$(latest_version)"
   if [ -n "$latest" ] && [ "${running%%.*}" != "${latest%%.*}" ]; then
-    echo "  WARNING: current stable is $latest ($(( ${latest%%.*} - ${running%%.*} )) major versions newer). Run: pib-chrome update && pib-chrome restart"
+    echo "  WARNING: current stable is $latest ($(( ${latest%%.*} - ${running%%.*} )) major versions newer). Run: agent-chrome-ctl update && agent-chrome-ctl restart"
   elif [ -n "$latest" ] && [ "$running" != "$latest" ]; then
-    echo "  update:  $latest is available (pib-chrome update)"
+    echo "  update:  $latest is available (agent-chrome-ctl update)"
   fi
   echo "  profile: $PROFILE"
   echo "  tabs:"
@@ -233,27 +233,27 @@ for t in pages:
 
 do_login() {
   local url="${1:-}"
-  [ -n "$url" ] || { echo "usage: pib-chrome login <url>" >&2; return 1; }
+  [ -n "$url" ] || { echo "usage: agent-chrome-ctl login <url>" >&2; return 1; }
   if alive && ! ours; then
-    echo "pib-chrome: the browser on port $PORT is not pib-chrome's; not restarting it" >&2
+    echo "agent-chrome-ctl: the browser on port $PORT is not agent-chrome-ctl's; not restarting it" >&2
     return 1
   fi
   if alive && [ "$(mode)" != visible ]; then
     local tabs
     tabs="$(curl -s --max-time 3 "http://127.0.0.1:$PORT/json/list" | grep -c '"type": "page"')"
-    echo "pib-chrome: restarting visible for a manual sign-in (this closes $tabs open agent tab(s))..."
+    echo "agent-chrome-ctl: restarting visible for a manual sign-in (this closes $tabs open agent tab(s))..."
     do_stop
     sleep 1
   fi
   alive || do_start --visible || return 1
   setsid nohup "$(chrome_bin)" "--user-data-dir=$PROFILE" "$url" >>"$LOG" 2>&1 </dev/null &
   disown
-  echo "pib-chrome: opened $url - sign in there, then run: pib-chrome background"
+  echo "agent-chrome-ctl: opened $url - sign in there, then run: agent-chrome-ctl background"
 }
 
 do_background() {
   if alive && ours && [ "$(mode)" = background ]; then
-    echo "pib-chrome: already in background mode"
+    echo "agent-chrome-ctl: already in background mode"
     return 0
   fi
   if alive; then do_stop || return 1; sleep 1; fi
@@ -268,7 +268,7 @@ do_update() {
   local check=0 repo=https://dl.google.com/linux/chrome/deb tmp ver file sha have
   [ "${1:-}" = "--check" ] && check=1
   for tool in curl gpg ar tar sha256sum; do
-    command -v "$tool" >/dev/null || { echo "pib-chrome: update needs $tool" >&2; return 1; }
+    command -v "$tool" >/dev/null || { echo "agent-chrome-ctl: update needs $tool" >&2; return 1; }
   done
   tmp="$(mktemp -d)" || return 1
   trap 'rm -rf "$tmp"' RETURN
@@ -276,7 +276,7 @@ do_update() {
     && curl -fsS --max-time 30 "$repo/dists/stable/Release.gpg" -o "$tmp/Release.gpg" \
     && curl -fsS --max-time 30 "$repo/dists/stable/main/binary-amd64/Packages" -o "$tmp/Packages" \
     && curl -fsS --max-time 30 https://dl.google.com/linux/linux_signing_key.pub -o "$tmp/key.pub" \
-    || { echo "pib-chrome: could not fetch the repository metadata" >&2; return 1; }
+    || { echo "agent-chrome-ctl: could not fetch the repository metadata" >&2; return 1; }
 
   # Verify in a throwaway GnuPG home. (Not --keyring: with `use-keyboxd` in
   # ~/.gnupg/common.conf gpg ignores it and imports into the user's own keys.)
@@ -286,34 +286,34 @@ do_update() {
   gpg --homedir "$tmp/gnupg" --batch --quiet --import "$tmp/key.pub" >/dev/null 2>&1
   gpg --homedir "$tmp/gnupg" --batch --status-fd 1 --verify "$tmp/Release.gpg" "$tmp/Release" 2>/dev/null \
     | grep -q "^\[GNUPG:\] VALIDSIG .* $GOOGLE_KEY_FPR\$" \
-    || { echo "pib-chrome: the repository signature does not verify against Google's key ($GOOGLE_KEY_FPR); refusing" >&2; return 1; }
+    || { echo "agent-chrome-ctl: the repository signature does not verify against Google's key ($GOOGLE_KEY_FPR); refusing" >&2; return 1; }
   gpgconf --homedir "$tmp/gnupg" --kill all >/dev/null 2>&1
   sha="$(sha256sum "$tmp/Packages" | cut -d' ' -f1)"
   grep -q "^ $sha .* main/binary-amd64/Packages$" "$tmp/Release" \
-    || { echo "pib-chrome: the package index does not match the signed release file; refusing" >&2; return 1; }
+    || { echo "agent-chrome-ctl: the package index does not match the signed release file; refusing" >&2; return 1; }
 
   ver="$(awk -v RS= '/Package: google-chrome-stable\n/' "$tmp/Packages" | sed -n 's/^Version: \([0-9.]*\).*/\1/p' | head -1)"
   file="$(awk -v RS= '/Package: google-chrome-stable\n/' "$tmp/Packages" | sed -n 's/^Filename: //p' | head -1)"
   sha="$(awk -v RS= '/Package: google-chrome-stable\n/' "$tmp/Packages" | sed -n 's/^SHA256: //p' | head -1)"
-  [ -n "$ver" ] && [ -n "$file" ] && [ -n "$sha" ] || { echo "pib-chrome: could not read the package index" >&2; return 1; }
+  [ -n "$ver" ] && [ -n "$file" ] && [ -n "$sha" ] || { echo "agent-chrome-ctl: could not read the package index" >&2; return 1; }
   have="$(readlink "$CHROME_DIR/current" 2>/dev/null)"
   if [ "$have" = "$ver" ] && [ -x "$CHROME_DIR/$ver/chrome" ]; then
-    echo "pib-chrome: private Chrome is current ($ver)"
+    echo "agent-chrome-ctl: private Chrome is current ($ver)"
     return 0
   fi
   if [ "$check" = 1 ]; then
-    echo "pib-chrome: Chrome $ver is available (installed privately: ${have:-none}; running binary: $(chrome_bin))"
+    echo "agent-chrome-ctl: Chrome $ver is available (installed privately: ${have:-none}; running binary: $(chrome_bin))"
     return 0
   fi
 
-  echo "pib-chrome: downloading Chrome $ver ..."
+  echo "agent-chrome-ctl: downloading Chrome $ver ..."
   local progress=-s
   [ -t 2 ] && progress=--progress-bar
-  curl -fS "$progress" --max-time 900 "$repo/$file" -o "$tmp/chrome.deb" || { echo "pib-chrome: download failed" >&2; return 1; }
+  curl -fS "$progress" --max-time 900 "$repo/$file" -o "$tmp/chrome.deb" || { echo "agent-chrome-ctl: download failed" >&2; return 1; }
   echo "$sha  $tmp/chrome.deb" | sha256sum -c --quiet - \
-    || { echo "pib-chrome: the download does not match its signed hash; refusing" >&2; return 1; }
+    || { echo "agent-chrome-ctl: the download does not match its signed hash; refusing" >&2; return 1; }
   (cd "$tmp" && ar x chrome.deb && tar -xf data.tar.* ./opt/google/chrome) \
-    || { echo "pib-chrome: could not unpack the package" >&2; return 1; }
+    || { echo "agent-chrome-ctl: could not unpack the package" >&2; return 1; }
   # Not setuid when unpacked by a user, and a non-setuid helper makes Chrome
   # abort. Without it Chrome uses the user-namespace sandbox, which is as good.
   rm -f "$tmp/opt/google/chrome/chrome-sandbox"
@@ -323,8 +323,8 @@ do_update() {
   ln -sfn "$ver" "$CHROME_DIR/current"
   # Keep the new one and the one before it.
   ls -1 "$CHROME_DIR" | grep -E '^[0-9.]+$' | grep -vx -e "$ver" -e "$have" | while read -r old; do rm -rf "${CHROME_DIR:?}/$old"; done
-  echo "pib-chrome: installed Chrome $ver in $CHROME_DIR/$ver"
-  alive && ours && echo "pib-chrome: the running browser is still the old one; pib-chrome restart to switch"
+  echo "agent-chrome-ctl: installed Chrome $ver in $CHROME_DIR/$ver"
+  alive && ours && echo "agent-chrome-ctl: the running browser is still the old one; agent-chrome-ctl restart to switch"
   return 0
 }
 
@@ -338,5 +338,5 @@ case "${1:-}" in
   update)     shift; do_update "$@" ;;
   profile)    echo "$PROFILE" ;;
   ""|-h|--help|help) usage ;;
-  *) echo "pib-chrome: unknown command '$1'" >&2; usage; exit 1 ;;
+  *) echo "agent-chrome-ctl: unknown command '$1'" >&2; usage; exit 1 ;;
 esac
