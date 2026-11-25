@@ -1,8 +1,8 @@
-"""``python -m agent_chrome``: setup helpers for an installed package.
+"""``agent-chrome-setup`` (or ``python -m agent_chrome``): setup helpers.
 
-    python -m agent_chrome doctor          check node, bash and the browser
-    python -m agent_chrome install-skill   link the agent manual into ~/.claude/skills
-    python -m agent_chrome paths           where the bundled files are
+    agent-chrome-setup doctor          check node, bash, the Linux compositor and the browser
+    agent-chrome-setup install-skill   link the agent manual into ~/.claude/skills
+    agent-chrome-setup paths           where the bundled files are
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from pathlib import Path
 from . import __version__, _paths
 
 
-def _doctor(_: argparse.Namespace) -> int:
+def _doctor(args: argparse.Namespace) -> int:
     ok = True
 
     def line(good: bool, what: str, detail: str) -> None:
@@ -39,9 +39,21 @@ def _doctor(_: argparse.Namespace) -> int:
         found = shutil.which(tool)
         line(bool(found), tool, found or "not on PATH (agent-chrome-ctl uses it)")
     if sys.platform.startswith("linux"):
-        for tool in ("cage", "wlr-randr"):
+        for tool in ("cage", "wlr-randr", "ss", "setsid"):
             found = shutil.which(tool)
             line(bool(found), tool, found or "not on PATH (agent-chrome-ctl start needs it on Linux)")
+        musl = any(name.startswith("ld-musl-") for name in os.listdir("/lib")) if os.path.isdir("/lib") else False
+        if not os.path.exists("/etc/NIXOS") and not musl:
+            for tool in ("gpg", "ar", "tar", "sha256sum"):
+                found = shutil.which(tool)
+                line(bool(found), tool, found or "not on PATH (agent-chrome-ctl update needs it)")
+        if bash:
+            libs = subprocess.run(
+                [bash, str(_paths.script("agent-chrome-ctl")), "libs"], capture_output=True, text=True
+            ).stdout.split()
+            line(not libs, "libs", "missing: " + " ".join(libs) if libs else "the browser finds all its shared libraries")
+    if args.no_browser:
+        return 0 if ok else 1
     try:
         from .client import AgentChrome, AgentChromeError
 
@@ -89,10 +101,12 @@ def _paths_cmd(_: argparse.Namespace) -> int:
 
 
 def main(argv: "list[str] | None" = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m agent_chrome", description="Setup helpers for agent-chrome.")
+    parser = argparse.ArgumentParser(prog="agent-chrome-setup", description="Setup helpers for agent-chrome.")
     parser.add_argument("--version", action="version", version=__version__)
     sub = parser.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("doctor", help="check node, bash, the Linux compositor and the browser").set_defaults(fn=_doctor)
+    p = sub.add_parser("doctor", help="check node, bash, the Linux compositor and the browser")
+    p.add_argument("--no-browser", action="store_true", help="skip the check for a running browser")
+    p.set_defaults(fn=_doctor)
     p = sub.add_parser("install-skill", help="link the agent manual into a skills directory")
     p.add_argument("--dir", default="~/.claude/skills", help="skills directory (default: ~/.claude/skills)")
     p.add_argument("--copy", action="store_true", help="copy instead of symlinking")
@@ -103,5 +117,9 @@ def main(argv: "list[str] | None" = None) -> int:
     return args.fn(args)
 
 
-if __name__ == "__main__":
+def cli() -> None:
     sys.exit(main())
+
+
+if __name__ == "__main__":
+    cli()

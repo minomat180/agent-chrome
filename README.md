@@ -68,31 +68,71 @@ server and a Mac.
 
 ## Quick start
 
+One command on Linux (any distribution) or macOS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/minomat180/agent-chrome/main/install.sh | sh
+```
+
+It asks once before using sudo, then:
+
+1. installs what the launcher needs with your package manager (apt, dnf, pacman,
+   zypper, apk, xbps, emerge): cage, wlr-randr, Xwayland, curl, gpg, python3 and so on;
+2. uses your Node if it is 22 or newer, else puts the current Node LTS in
+   `~/.local/share/agent-chrome/node`, checked against nodejs.org's
+   `SHASUMS256.txt` (your system Node is not touched);
+3. installs the package with uv, else pipx, else a private venv, which gives you
+   `agent-chrome`, `agent-chrome-ctl` and `agent-chrome-setup`;
+4. installs a private Chrome with `agent-chrome-ctl update` (signature checked) and
+   the shared libraries it reports missing;
+5. links the Claude Code skill if `~/.claude` exists, starts the browser and runs
+   `agent-chrome-setup doctor`.
+
+`sh -s -- --autostart` also starts the browser at login (a systemd user service
+or a LaunchAgent), `--yes` installs packages without asking, `--no-deps`
+never installs any, `--uninstall` removes it again (your profile is kept unless
+you pass `--purge`), and `--help` lists the rest. From a checkout, `./install.sh`
+installs that checkout.
+
+| Tested with `install.sh` and the full suite | Result |
+|---|---|
+| Debian 13, Ubuntu 26.04, Fedora, Arch, openSUSE Tumbleweed, Alpine (x86_64 containers, 2026-11-25) | 143/143 |
+| NixOS (prints the `configuration.nix` lines instead of installing packages) | 143/143 |
+| Ubuntu 24.04: cage 0.1.5 crashes on a mode change, so the browser runs at 1280x720 | 142/143 |
+| Debian 12: cage 0.1.4 can set neither the size nor a pointer device | 141/143 |
+
+On Alpine (musl) Google's Chrome does not run, so the distribution's Chromium is
+used. arm64 Linux gets Google's arm64 build; I have not run it there.
+
+<details>
+<summary>Installing by hand</summary>
+
 | Platform | Needs |
 |---|---|
-| Everywhere | Node 22 or newer, bash, python3, curl; uv or pipx to install it as a package |
-| Linux | [cage](https://github.com/cage-kiosk/cage) and `wlr-randr`; gpg, `ar`, tar and sha256sum for `agent-chrome-ctl update` |
+| Everywhere | Node 22 or newer, bash, python3 (3.9+), curl |
+| Linux | [cage](https://github.com/cage-kiosk/cage), `wlr-randr`, Xwayland if your cage was built with it, `ss`, `setsid`; gpg, `ar`, tar, xz and sha256sum for `agent-chrome-ctl update`; Chrome's own libraries (`agent-chrome-ctl libs` lists what is missing) |
 | macOS | nothing else |
 
-Install it as a Python package; this puts `agent-chrome` and `agent-chrome-ctl`
-on your PATH and makes it importable from Python:
+As a Python package (puts the three commands on your PATH):
 
 ```sh
 uv tool install git+https://github.com/minomat180/agent-chrome   # or: pipx install git+...
-python -m agent_chrome doctor   # checks node, bash, cage and whether a browser is up
+agent-chrome-ctl update           # a private Chrome
+agent-chrome-setup doctor         # checks node, bash, cage, libraries and the browser
 ```
 
-`uv tool install` gives it its own environment; to import it from your own
-project use `uv add git+https://github.com/minomat180/agent-chrome` or
-`pip install git+https://github.com/minomat180/agent-chrome` there instead
-(`doctor` then runs with that project's Python). The package bundles the Node
-CLI; Node itself still has to be on PATH. Or run it from a checkout, which is
-what my machines do:
+To import it from your own project, add it there instead:
+`uv add git+https://github.com/minomat180/agent-chrome` or
+`pip install git+https://github.com/minomat180/agent-chrome`.
+
+Or straight from a checkout, which is what my own machines do:
 
 ```sh
 git clone https://github.com/minomat180/agent-chrome && cd agent-chrome
 export PATH="$PWD/bin:$PATH"
 ```
+
+</details>
 
 Then:
 
@@ -103,7 +143,7 @@ agent-chrome click "text=Learn more"
 agent-chrome close                # closes this session's tabs
 ```
 
-If no Chrome is installed yet, run `agent-chrome-ctl update` before `start`.
+Without the installer, run `agent-chrome-ctl update` before the first `start`.
 There is no build step.
 
 | Command | What it does |
@@ -119,8 +159,8 @@ There is no build step.
 | `agent-chrome-ctl login <url>` / `background` | show the browser to sign in by hand, then hide it again |
 
 For Claude Code, link the agent manual as a skill:
-`python -m agent_chrome install-skill` when installed as a package (`--copy` to
-copy instead, `--dir` for another skills directory), or
+`agent-chrome-setup install-skill` when installed as a package (the installer
+does this; `--copy` to copy instead, `--dir` for another skills directory), or
 `ln -s "$PWD/skill" ~/.claude/skills/agent-chrome` from a checkout.
 
 <details>
@@ -135,7 +175,7 @@ copy instead, `--dir` for another skills directory), or
 | `AGENT_CHROME_BIN` | the private Chrome, else the system one |
 | `AGENT_CHROME_STATE_DIR` | `$XDG_RUNTIME_DIR/agent-chrome` (or `/tmp/agent-chrome`) |
 | `AGENT_CHROME_SESSION` | `CLAUDE_CODE_SESSION_ID`, else `default` |
-| `AGENT_CHROME_NODE` | the `node` the Python package and, on macOS, the window helper and unload guard use (default: `node` on PATH) |
+| `AGENT_CHROME_NODE` | the `node` the Python package and, on macOS, the window helper and unload guard use (default: the installer's private Node if there is one, else `node` on PATH) |
 
 </details>
 
@@ -179,8 +219,8 @@ constructor arguments too.
 | | Linux | NixOS | macOS |
 |---|---|---|---|
 | Browser runs in | a headless `cage` compositor | a headless `cage` compositor | a minimised window |
-| Chrome comes from | `agent-chrome-ctl update` (Google's apt repo, signature checked) | nixpkgs `google-chrome` | `agent-chrome-ctl update` (Google's DMG, code signature checked) |
-| Started at boot or login by | nothing shipped; use your own service | a systemd user service | a LaunchAgent |
+| Chrome comes from | `agent-chrome-ctl update` (Google's apt repo, amd64 or arm64, signature checked); on musl the distribution's Chromium | nixpkgs `google-chrome` | `agent-chrome-ctl update` (Google's DMG, code signature checked) |
+| Started at boot or login by | `install.sh --autostart`: a systemd user service | a systemd user service you declare | `install.sh --autostart`: a LaunchAgent |
 | `login` / `background` | restart the browser | restart the browser | un-minimise / minimise, tabs survive |
 
 ### Linux
@@ -190,7 +230,11 @@ machine has a GPU and a normal user agent, but no window on anyone's screen.
 `agent-chrome-ctl update` installs the current stable Chrome into
 `~/.local/share/agent-chrome/chrome/<version>` after checking Google's signature
 on the apt `Release` file and the hash chain down to the `.deb`; `status` warns
-when the running Chrome is a major version behind.
+when the running Chrome is a major version behind. `agent-chrome-ctl libs`
+lists shared libraries the browser cannot find, and `start` refuses with that
+list instead of failing somewhere in the log. If cage crashes when it is resized
+to `AGENT_CHROME_SIZE` (cage 0.1.5, Ubuntu 24.04), `start` remembers that for
+this cage version and runs at the compositor's default size.
 
 ### NixOS
 

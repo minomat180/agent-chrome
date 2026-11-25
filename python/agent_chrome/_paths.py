@@ -38,8 +38,12 @@ def skill_dir() -> Path:
 
 
 def node() -> str:
-    """The node binary: AGENT_CHROME_NODE, else the first one on PATH."""
-    found = os.environ.get("AGENT_CHROME_NODE") or shutil.which("node")
+    """The node binary: AGENT_CHROME_NODE, else the private one install.sh
+    puts in $AGENT_CHROME_HOME/node when the system Node is missing or too
+    old, else the first one on PATH."""
+    home = Path(os.environ.get("AGENT_CHROME_HOME") or Path.home() / ".local/share/agent-chrome")
+    private = home / "node" / "current" / "bin" / "node"
+    found = os.environ.get("AGENT_CHROME_NODE") or (str(private) if os.access(private, os.X_OK) else None) or shutil.which("node")
     if not found:
         raise FileNotFoundError(
             "agent-chrome needs Node 22 or newer on PATH (or AGENT_CHROME_NODE set to a node binary)"

@@ -26,7 +26,11 @@ set -uo pipefail
 # where there is no node: then the unload guard and the minimised window
 # silently never happened, and "Leave site?" could stall restart and shut down.
 export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.nix-profile/bin"
-NODE="${AGENT_CHROME_NODE:-$(command -v node)}"
+# A private Node from install.sh (when the system one is missing or too old) wins over PATH.
+NODE="${AGENT_CHROME_NODE:-}"
+[ -z "$NODE" ] && [ -x "${AGENT_CHROME_HOME:-$HOME/.local/share/agent-chrome}/node/current/bin/node" ] \
+  && NODE="${AGENT_CHROME_HOME:-$HOME/.local/share/agent-chrome}/node/current/bin/node"
+[ -z "$NODE" ] && NODE="$(command -v node)"
 
 PORT="${AGENT_CHROME_PORT:-9222}"
 STATE="${AGENT_CHROME_HOME:-$HOME/.local/share/agent-chrome}"

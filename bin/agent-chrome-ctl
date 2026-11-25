@@ -36,6 +36,7 @@ CAGE_PID="$STATE/cage.pid"
 CHROME_PID="$STATE/chrome.pid"
 POINTER_PID="$STATE/pointer.pid"
 CHROME_DIR="$STATE/chrome"
+NO_RESIZE="$STATE/no-resize"   # holds the cage version that crashes on a mode change
 HERE="$(dirname "$(readlink -f "$0")")"
 POINTER="$HERE/../libexec/virtual-pointer.py"
 
@@ -46,9 +47,32 @@ chrome_bin() {
   # NixOS: no /opt, and Google's prebuilt binary does not run unpatched;
   # nixpkgs' google-chrome (or chromium) on PATH is the browser there.
   elif command -v google-chrome-stable >/dev/null; then command -v google-chrome-stable
-  elif command -v chromium >/dev/null; then command -v chromium
-  else echo /opt/google/chrome/chrome
+  elif command -v google-chrome >/dev/null; then command -v google-chrome
+  else
+    # A distro Chromium (Alpine, or an arch Google does not build for). Not
+    # the snap one: its confinement cannot use a profile under ~/.local.
+    local c
+    for c in chromium chromium-browser; do
+      c="$(command -v "$c")" && case "$(readlink -f "$c")" in /snap/*) ;; *) echo "$c"; return ;; esac
+    done
+    echo /opt/google/chrome/chrome
   fi
+}
+
+# Shared libraries the browser binary cannot find (prints one soname per line).
+missing_libs() {
+  local bin="${1:-$(chrome_bin)}"
+  [ -x "$bin" ] && command -v ldd >/dev/null || return 0
+  { ldd "$bin" 2>/dev/null || true; } | sed -n 's/^[[:space:]]*\([^[:space:]]*\) => not found.*/\1/p' | sort -u
+}
+
+# Google builds Chrome for Linux as amd64 and arm64 .debs, linked against glibc.
+deb_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64) echo amd64 ;;
+    aarch64|arm64) echo arm64 ;;
+    *) return 1 ;;
+  esac
 }
 
 usage() {
@@ -62,6 +86,7 @@ usage: agent-chrome-ctl <command>
   login <url>         restart VISIBLE and open <url> for a manual sign-in
   background          back to invisible (run after signing in)
   update [--check]    install the current stable Chrome privately (verified)
+  libs                list shared libraries the browser is missing (empty: none)
   profile             print the profile path
 
 env: AGENT_CHROME_PORT AGENT_CHROME_PROFILE AGENT_CHROME_HOME AGENT_CHROME_SIZE AGENT_CHROME_BIN
@@ -106,6 +131,8 @@ wait_up() {
 
 # The browser process that owns the debugging port is the one to remember:
 # under cage it is cage's child, in visible mode it is what we launched.
+cage_id() { cage -v 2>&1 | head -1; }
+
 record_chrome_pid() {
   local p
   p="$(port_owner)"
@@ -124,7 +151,8 @@ setup_headless_seat() {
       && display="$(ss -xlpn 2>/dev/null | grep -F "pid=$cage," | grep -o '/wayland-[0-9]*' | head -1 | tr -d /)"
   fi
   [ -n "$display" ] || { echo "agent-chrome-ctl: could not find the compositor socket; no pointer device, default size" >&2; return 0; }
-  if command -v wlr-randr >/dev/null; then
+  if command -v wlr-randr >/dev/null && [ "$(cat "$NO_RESIZE" 2>/dev/null)" != "$(cage_id)" ]; then
+    RESIZED=1
     WAYLAND_DISPLAY="$display" wlr-randr --output HEADLESS-1 --custom-mode "$SIZE" >>"$LOG" 2>&1 \
       || echo "agent-chrome-ctl: could not set $SIZE, staying at the compositor default" >&2
   fi
@@ -147,6 +175,9 @@ do_start() {
     return 0
   fi
   [ -x "$chrome" ] || { echo "agent-chrome-ctl: no Chrome at $chrome (try: agent-chrome-ctl update)" >&2; return 1; }
+  local missing
+  missing="$(missing_libs "$chrome")"
+  [ -z "$missing" ] || { echo "agent-chrome-ctl: $chrome is missing shared libraries: $(echo $missing); install them (the installer does: install.sh) and retry" >&2; return 1; }
   mkdir -p "$PROFILE" "$STATE"
 
   mapfile -t args < <(chrome_args)
@@ -175,7 +206,20 @@ do_start() {
     return 1
   fi
   record_chrome_pid
-  [ "$visible" = 1 ] || setup_headless_seat
+  if [ "$visible" = 0 ]; then
+    setup_headless_seat
+    # Some cage builds (0.1.5 with wlroots 0.17, Ubuntu 24.04) abort on an
+    # output mode change. Then remember that, and run at the default size.
+    if [ "${RESIZED:-0}" = 1 ] && { sleep 1; ! alive; } && [ "$(cat "$NO_RESIZE" 2>/dev/null)" != "$(cage_id)" ]; then
+      cage_id >"$NO_RESIZE"
+      echo "agent-chrome-ctl: this cage ($(cage_id)) crashed on the resize to $SIZE; starting again at its default size (a newer cage fixes this)" >&2
+      local p
+      for p in "$POINTER_PID" "$CAGE_PID" "$CHROME_PID"; do p="$(pid_of "$p")" && [ -n "$p" ] && kill "$p" 2>/dev/null; done
+      rm -f "$MODE_FILE" "$CHROME_PID" "$CAGE_PID" "$POINTER_PID"
+      do_start
+      return
+    fi
+  fi
   echo "agent-chrome-ctl: up on 127.0.0.1:$PORT ($(mode) mode, $("$chrome" --version 2>/dev/null | sed 's/ *$//'))"
 }
 
@@ -287,8 +331,13 @@ do_update() {
     echo "  update it with the system: sudo nixos-rebuild switch --upgrade, then agent-chrome-ctl restart"
     return 0
   fi
-  local check=0 repo=https://dl.google.com/linux/chrome/deb tmp ver file sha have
+  local check=0 repo=https://dl.google.com/linux/chrome/deb tmp ver file sha have arch
   [ "${1:-}" = "--check" ] && check=1
+  arch="$(deb_arch)" || { echo "agent-chrome-ctl: Google builds no Chrome for $(uname -m); install your distribution's chromium (it is used when found on PATH)" >&2; return 1; }
+  if ls /lib/ld-musl-* >/dev/null 2>&1; then
+    echo "agent-chrome-ctl: this system uses musl libc, and Google's Chrome needs glibc; install your distribution's chromium (it is used when found on PATH)" >&2
+    return 1
+  fi
   for tool in curl gpg ar tar sha256sum; do
     command -v "$tool" >/dev/null || { echo "agent-chrome-ctl: update needs $tool" >&2; return 1; }
   done
@@ -296,7 +345,7 @@ do_update() {
   trap 'rm -rf "$tmp"' RETURN
   curl -fsS --max-time 30 "$repo/dists/stable/Release" -o "$tmp/Release" \
     && curl -fsS --max-time 30 "$repo/dists/stable/Release.gpg" -o "$tmp/Release.gpg" \
-    && curl -fsS --max-time 30 "$repo/dists/stable/main/binary-amd64/Packages" -o "$tmp/Packages" \
+    && curl -fsS --max-time 30 "$repo/dists/stable/main/binary-$arch/Packages" -o "$tmp/Packages" \
     && curl -fsS --max-time 30 https://dl.google.com/linux/linux_signing_key.pub -o "$tmp/key.pub" \
     || { echo "agent-chrome-ctl: could not fetch the repository metadata" >&2; return 1; }
 
@@ -311,7 +360,7 @@ do_update() {
     || { echo "agent-chrome-ctl: the repository signature does not verify against Google's key ($GOOGLE_KEY_FPR); refusing" >&2; return 1; }
   gpgconf --homedir "$tmp/gnupg" --kill all >/dev/null 2>&1
   sha="$(sha256sum "$tmp/Packages" | cut -d' ' -f1)"
-  grep -q "^ $sha .* main/binary-amd64/Packages$" "$tmp/Release" \
+  grep -q "^ $sha .* main/binary-$arch/Packages$" "$tmp/Release" \
     || { echo "agent-chrome-ctl: the package index does not match the signed release file; refusing" >&2; return 1; }
 
   ver="$(awk -v RS= '/Package: google-chrome-stable\n/' "$tmp/Packages" | sed -n 's/^Version: \([0-9.]*\).*/\1/p' | head -1)"
@@ -346,6 +395,9 @@ do_update() {
   # Keep the new one and the one before it.
   ls -1 "$CHROME_DIR" | grep -E '^[0-9.]+$' | grep -vx -e "$ver" -e "$have" | while read -r old; do rm -rf "${CHROME_DIR:?}/$old"; done
   echo "agent-chrome-ctl: installed Chrome $ver in $CHROME_DIR/$ver"
+  local missing
+  missing="$(missing_libs "$CHROME_DIR/$ver/chrome")"
+  [ -z "$missing" ] || echo "agent-chrome-ctl: it is missing shared libraries: $(echo $missing) (install.sh installs them; or see agent-chrome-ctl libs)" >&2
   alive && ours && echo "agent-chrome-ctl: the running browser is still the old one; agent-chrome-ctl restart to switch"
   return 0
 }
@@ -359,6 +411,7 @@ case "${1:-}" in
   background) do_background ;;
   update)     shift; do_update "$@" ;;
   profile)    echo "$PROFILE" ;;
+  libs)       missing_libs ;;
   ""|-h|--help|help) usage ;;
   *) echo "agent-chrome-ctl: unknown command '$1'" >&2; usage; exit 1 ;;
 esac
