@@ -16,7 +16,7 @@
 [![Node](https://img.shields.io/badge/node-%3E%3D22-4c8bf5?style=flat-square&logo=nodedotjs&logoColor=white)](#quick-start)
 [![Top language](https://img.shields.io/github/languages/top/minomat180/agent-chrome?style=flat-square&color=4c8bf5)](bin/agent-chrome)
 
-[Quick start](#quick-start) · [Platforms](#platforms) · [How it works](#how-it-works) · [Why I wrote it](#why-i-wrote-it) · [Tests](#tests) · [Limits](#limits)
+[Quick start](#quick-start) · [Python](#python) · [Platforms](#platforms) · [How it works](#how-it-works) · [Why I wrote it](#why-i-wrote-it) · [Tests](#tests) · [Limits](#limits)
 
 <br>
 
@@ -62,22 +62,41 @@ server and a Mac.
 > in [SECURITY.md](SECURITY.md).
 
 > [!NOTE]
-> This is a personal tool for my own two machines. It is not packaged, and I am
-> not trying to grow it into a general project. [skill/SKILL.md](skill/SKILL.md)
+> This is a personal tool for my own two machines, and I am not trying to grow
+> it into a general project. [skill/SKILL.md](skill/SKILL.md)
 > is the manual my own agents load, so it refers to my setup.
 
 ## Quick start
 
 | Platform | Needs |
 |---|---|
-| Everywhere | Node 22 or newer, bash, python3, curl |
+| Everywhere | Node 22 or newer, bash, python3, curl; uv or pipx to install it as a package |
 | Linux | [cage](https://github.com/cage-kiosk/cage) and `wlr-randr`; gpg, `ar`, tar and sha256sum for `agent-chrome-ctl update` |
 | macOS | nothing else |
+
+Install it as a Python package; this puts `agent-chrome` and `agent-chrome-ctl`
+on your PATH and makes it importable from Python:
+
+```sh
+uv tool install git+https://github.com/minomat180/agent-chrome   # or: pipx install git+...
+python -m agent_chrome doctor   # checks node, bash, cage and whether a browser is up
+```
+
+`uv tool install` gives it its own environment; to import it from your own
+project use `uv add git+https://github.com/minomat180/agent-chrome` or
+`pip install git+https://github.com/minomat180/agent-chrome` there instead
+(`doctor` then runs with that project's Python). The package bundles the Node
+CLI; Node itself still has to be on PATH. Or run it from a checkout, which is
+what my machines do:
 
 ```sh
 git clone https://github.com/minomat180/agent-chrome && cd agent-chrome
 export PATH="$PWD/bin:$PATH"
+```
 
+Then:
+
+```sh
 agent-chrome-ctl start            # Chrome with its own profile, CDP on 127.0.0.1:9222
 agent-chrome open example.com     # this session's tab; prints the elements with refs
 agent-chrome click "text=Learn more"
@@ -100,7 +119,9 @@ There is no build step.
 | `agent-chrome-ctl login <url>` / `background` | show the browser to sign in by hand, then hide it again |
 
 For Claude Code, link the agent manual as a skill:
-`ln -s "$PWD/skill" ~/.claude/skills/agent-chrome`.
+`python -m agent_chrome install-skill` when installed as a package (`--copy` to
+copy instead, `--dir` for another skills directory), or
+`ln -s "$PWD/skill" ~/.claude/skills/agent-chrome` from a checkout.
 
 <details>
 <summary>Environment variables</summary>
@@ -114,9 +135,44 @@ For Claude Code, link the agent manual as a skill:
 | `AGENT_CHROME_BIN` | the private Chrome, else the system one |
 | `AGENT_CHROME_STATE_DIR` | `$XDG_RUNTIME_DIR/agent-chrome` (or `/tmp/agent-chrome`) |
 | `AGENT_CHROME_SESSION` | `CLAUDE_CODE_SESSION_ID`, else `default` |
-| `AGENT_CHROME_NODE` | macOS only: the `node` that runs the window helper and the unload guard |
+| `AGENT_CHROME_NODE` | the `node` the Python package and, on macOS, the window helper and unload guard use (default: `node` on PATH) |
 
 </details>
+
+## Python
+
+`agent_chrome.AgentChrome` is a thin client for Python agents, tools and
+plugins. Each method is one `agent-chrome` call and returns the same text an
+agent reads in the shell, change report included, so nothing can drift out of
+sync with the CLI. No dependencies, Python 3.9 or newer.
+
+```python
+from agent_chrome import AgentChrome, AgentChromeError, ctl
+
+ctl("start")                                   # agent-chrome-ctl start; no-op if it is up
+
+with AgentChrome(session="my-plugin") as b:    # own tab; closed again on exit
+    print(b.open("example.com"))               # page listing with refs e1, e2 ...
+    print(b.fill("text=Email", "me@example.com"))
+    b.secret("#password", password)            # sent on stdin, never in argv or a report
+    print(b.click("text=Sign in", accept=True))  # answer a confirm() with yes
+    b.wait("text", "Welcome")
+    path = b.shot("/tmp/after-login.png")
+    print(b.run(["get title", "get url"]))     # one batch, stops at the first error
+
+try:
+    b.click("#missing")
+except AgentChromeError as err:
+    print(err.message, err.hint)               # what the CLI printed, split up
+```
+
+There is a method for every command (`snap`, `text`, `read`, `html`, `eval`,
+`url`, `title`, `value`, `attr`, `count`, `select`, `check`, `hover`, `scroll`,
+`upload`, `download`, `tabs`, `tab_new`, `status`, `cdp` ...) and `call(*args)`
+for anything else. Give each plugin or worker its own `session` so they do not
+share a tab; without one it follows `AGENT_CHROME_SESSION` or
+`CLAUDE_CODE_SESSION_ID`, like the CLI. `port`, `quiet`, `timeout` and `env` are
+constructor arguments too.
 
 ## Platforms
 
@@ -244,15 +300,17 @@ re-resolve when used, and input dispatched at the compositor level.
 ## Tests
 
 ```sh
-test/run.sh      # 123 end-to-end checks in a throwaway Chrome on port 9557
+test/run.sh      # 143 end-to-end checks in a throwaway Chrome on port 9557
 ```
 
 The suite starts its own browser and a fixture server on `localhost:8765` and
 never touches 9222. It covers forms (controlled inputs, date, contenteditable,
 select, upload), secrets and masking, shadow DOM, same-origin and cross-site
 iframes, covers and overlays, dialogs, hover, downloads, tabs, batches, two
-concurrent sessions, and the pointer, `webdriver` and viewport checks. It passes
-123/123 on NixOS (Chrome 157) and on macOS 26 (arm64).
+concurrent sessions, the pointer, `webdriver` and viewport checks, and the
+Python client (`test/python_client.py`, 20 of the checks). The CLI checks
+passed 123/123 on NixOS (Chrome 157) and on macOS 26 (arm64); with the Python
+client, 143/143 on NixOS (Chrome 158).
 
 ## Limits
 

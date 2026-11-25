@@ -201,6 +201,15 @@ else
   has "1080p viewport"              "1920"  agent-chrome eval 'innerWidth'
 fi
 
+# --- python client (python/agent_chrome) -------------------------------------
+pyout="$(python3 test/python_client.py 2>&1)"
+printf '%s\n' "$pyout" | grep -v '^python: passed' || true
+if [[ "$pyout" =~ python:\ passed\ ([0-9]+),\ failed\ ([0-9]+) ]]; then
+  pass=$((pass + BASH_REMATCH[1])); fail=$((fail + BASH_REMATCH[2]))
+else
+  bad "python client" "$(echo "$pyout" | tail -3 | tr '\n' '~')"
+fi
+
 echo
 echo "passed $pass, failed $fail"
 [ "$fail" = 0 ]
