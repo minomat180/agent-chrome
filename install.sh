@@ -163,7 +163,12 @@ if [ "$MODE" = uninstall ]; then
   if [ "$PURGE" = 1 ]; then
     rm -rf "$AC_HOME" && info "removed $AC_HOME (profile, sign-ins, private Chrome)"
   else
-    [ -d "$AC_HOME" ] && info "kept $AC_HOME (profile with your sign-ins, private Chrome); --purge removes it"
+    kept=""
+    [ -d "$AC_HOME/chrome-profile" ] && kept="the profile with your sign-ins"
+    [ -d "$AC_HOME/chrome" ] && kept="${kept:+$kept and }the private Chrome"
+    if [ -n "$kept" ]; then info "kept $kept in $AC_HOME; --purge removes it"
+    elif [ -d "$AC_HOME" ]; then rmdir "$AC_HOME" 2>/dev/null || info "left $AC_HOME (logs only); --purge removes it"
+    fi
   fi
   say "done"
   exit 0
