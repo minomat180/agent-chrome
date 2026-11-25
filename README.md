@@ -98,6 +98,7 @@ installs that checkout.
 |---|---|
 | Debian 13, Ubuntu 26.04, Fedora, Arch, openSUSE Tumbleweed, Alpine (x86_64 containers, 2026-11-25) | 143/143 |
 | NixOS (prints the `configuration.nix` lines instead of installing packages) | 143/143 |
+| macOS 27 (arm64): with Homebrew's Node, and with a bare PATH (private Node, Command Line Tools Python 3.9) | 143/143 |
 | Ubuntu 24.04: cage 0.1.5 crashes on a mode change, so the browser runs at 1280x720 | 142/143 |
 | Debian 12: cage 0.1.4 can set neither the size nor a pointer device | 141/143 |
 
@@ -354,7 +355,7 @@ iframes, covers and overlays, dialogs, hover, downloads, tabs, batches, two
 concurrent sessions, the pointer, `webdriver` and viewport checks, and the
 Python client (`test/python_client.py`, 20 of the checks). The CLI checks
 passed 123/123 on NixOS (Chrome 157) and on macOS 26 (arm64); with the Python
-client, 143/143 on NixOS (Chrome 158).
+client, 143/143 on NixOS (Chrome 158) and on macOS 27 (arm64, Chrome 158).
 
 ## Limits
 
